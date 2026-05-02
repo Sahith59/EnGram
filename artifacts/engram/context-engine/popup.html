@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ENGRAM</title>
+    <style>
+      :root {
+        --bg: #0d1117;
+        --card: #161b22;
+        --border: #30363d;
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --engram: #7c3aed;
+        --engram-light: #a78bfa;
+        --green: #22c55e;
+        --yellow: #eab308;
+      }
+      html, body { margin: 0; padding: 0; }
+      body {
+        width: 320px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-size: 13px;
+      }
+      .wrap { padding: 16px; }
+      .brand {
+        display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
+      }
+      .logo {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px; letter-spacing: 0.22em; color: var(--engram-light);
+        font-weight: 600;
+      }
+      .tag {
+        font-size: 10px; color: var(--muted); text-transform: uppercase;
+        letter-spacing: 0.1em; padding: 2px 6px; border: 1px solid var(--border);
+        border-radius: 4px;
+      }
+      .status {
+        display: flex; align-items: center; gap: 8px;
+        padding: 10px 12px; background: var(--card); border: 1px solid var(--border);
+        border-radius: 8px; margin-bottom: 12px;
+      }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 8px; }
+      .dot.ok { background: var(--green); box-shadow: 0 0 8px var(--green); }
+      .dot.warn { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+      .status-text { flex: 1; font-size: 12px; }
+      .status-text a { color: var(--engram-light); text-decoration: none; }
+      .status-text a:hover { text-decoration: underline; }
+      .muted { color: var(--muted); }
+      .btn {
+        display: block; width: 100%; padding: 10px 12px; margin-top: 8px;
+        background: var(--card); color: var(--text); border: 1px solid var(--border);
+        border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500;
+        text-align: left; transition: all 120ms ease;
+        font-family: inherit;
+      }
+      .btn:hover { border-color: var(--engram); background: #1c222b; }
+      .btn.primary {
+        background: var(--engram); color: #fff; border-color: var(--engram);
+      }
+      .btn.primary:hover { background: #8b5cf6; }
+      .footer {
+        margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+        font-size: 11px; color: var(--muted); text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="brand">
+        <span class="logo">ENGRAM</span>
+        <span class="tag">v0.1</span>
+      </div>
+
+      <div class="status">
+        <span id="status-dot" class="dot"></span>
+        <span id="status-text" class="status-text muted">Checking…</span>
+      </div>
+
+      <button id="dashboard-btn" class="btn primary">Open Dashboard →</button>
+      <button id="resume-btn" class="btn">Resume Last Session</button>
+      <button id="ask-btn" class="btn">Ask a Question</button>
+
+      <div class="footer">Git for AI Decisions</div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
