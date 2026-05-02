@@ -2,12 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { anthropic } from "@/lib/anthropic";
 import { corsOptions, withCors, CORS_HEADERS } from "@/lib/cors";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
 
 export function OPTIONS() {
   return corsOptions();
 }
 
 export async function POST(request: NextRequest) {
+  if (!isSupabaseConfigured()) {
+    return withCors(
+      NextResponse.json({ error: "Supabase not configured" }, { status: 503 })
+    );
+  }
   const secret = request.headers.get("x-engram-secret");
   if (!secret || secret !== process.env.EXTENSION_SECRET) {
     return withCors(

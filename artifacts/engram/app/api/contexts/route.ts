@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
 
 export async function GET(request: NextRequest) {
+  if (!isSupabaseConfigured()) {
+    return NextResponse.json({
+      data: [],
+      pagination: { page: 1, limit: 20, total: 0, pages: 0 },
+      unconfigured: true,
+    });
+  }
   const supabase = await createClient();
 
   const {

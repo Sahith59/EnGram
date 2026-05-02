@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { anthropic } from "@/lib/anthropic";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
 import crypto from "crypto";
 
 function verifySlackSignature(
@@ -47,6 +48,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       response_type: "ephemeral",
       text: "Usage: `/engram <your question>`",
+    });
+  }
+
+  if (!isSupabaseConfigured()) {
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "ENGRAM isn't fully configured yet (Supabase env vars missing).",
     });
   }
 
