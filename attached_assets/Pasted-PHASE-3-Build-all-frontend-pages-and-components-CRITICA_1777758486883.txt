@@ -1,0 +1,38 @@
+PHASE 3: Build all frontend pages and components.
+
+CRITICAL RULE: Any component or page using React hooks (useState, useEffect, useRouter, 
+useCallback) or the Supabase browser client MUST have 'use client'; as the first line.
+If you forget this, Next.js will throw a hydration error. Apply it to every interactive component.
+
+The design system:
+- Background: #0d1117, Cards: #161b22, Border: #30363d
+- Text: #e6edf3, Muted: #8b949e
+- Accent purple: #7c3aed (hover: #a78bfa)
+- This should look like GitHub dark mode. Dense, technical, clean.
+
+Build these components first:
+1. components/layout/Sidebar.tsx ('use client') — vertical nav: Dashboard, Ask ENGRAM, Team, Settings
+   with tool filter checkboxes (All / ChatGPT / Claude / Gemini)
+2. components/layout/TopBar.tsx ('use client') — ENGRAM logo + user avatar + sign out
+3. components/context/ToolBadge.tsx — colored pill: ChatGPT=green, Claude=orange, Gemini=blue
+4. components/context/ContextCard.tsx ('use client') — full card with hover purple border,
+   tool badge, title, timestamp, summary preview (first 150 chars), tech tag pills,
+   "context.md" button (copies context_md to clipboard), "Continue →" dropdown
+5. components/context/ContextTimeline.tsx ('use client') — loads from /api/contexts, renders ContextCards
+6. components/dashboard/EmptyState.tsx — the FedEx story empty state (see spec for exact copy)
+7. components/ask/QueryInput.tsx ('use client') — large text input (56px height) with Ask button
+8. components/ask/AnswerCard.tsx — formatted answer with source citation cards below
+9. components/resume/ResumeBanner.tsx ('use client') — fixed bottom-right banner with Resume button
+
+Build these pages:
+10. app/page.tsx — Landing page: hero headline "When Claude hits your limit, ENGRAM picks up 
+    where you left off", 3 feature cards, how it works steps, CTA buttons.
+    If user is already logged in, redirect to /dashboard.
+11. app/(auth)/login/page.tsx — Supabase Auth UI with dark theme (brand color #7c3aed)
+12. app/dashboard/page.tsx ('use client') — Sidebar + ContextTimeline + EmptyState if no data
+13. app/context/[id]/page.tsx ('use client') — 3 tabs: Summary / context.md / Raw conversation
+14. app/ask/page.tsx ('use client') — full-width, QueryInput centered, AnswerCard, recent queries list
+15. app/resume/page.tsx ('use client') — shows last captured snapshot, Resume in Claude/ChatGPT buttons
+16. app/settings/page.tsx ('use client') — 4 tabs: Profile, API Key, Team, Privacy
+
+STOP. Tell me what you built and wait for my next message.

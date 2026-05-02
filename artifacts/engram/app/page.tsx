@@ -1,12 +1,20 @@
-export default function Home() {
-  return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-gh-bg">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold text-gh-text tracking-tight">
-          ENGRAM
-        </h1>
-        <p className="mt-2 text-gh-muted text-lg">Git for AI Decisions</p>
-      </div>
-    </main>
-  );
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import { LandingClient } from "./landing-client";
+
+export default async function Home() {
+  let user = null;
+  try {
+    const supabase = await createClient();
+    const res = await supabase.auth.getUser();
+    user = res.data.user;
+  } catch {
+    // Supabase not configured yet — show landing page
+  }
+
+  if (user) {
+    redirect("/dashboard");
+  }
+
+  return <LandingClient />;
 }
