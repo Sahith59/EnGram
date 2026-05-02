@@ -1,0 +1,45 @@
+PHASE 2: Build all API routes.
+
+CRITICAL RULE — CORS: The Chrome extension runs on chrome-extension:// origin.
+Every API route that the extension calls MUST export an OPTIONS function that returns:
+  Access-Control-Allow-Origin: *
+  Access-Control-Allow-Methods: POST, OPTIONS
+  Access-Control-Allow-Headers: Content-Type, x-engram-secret
+Every POST response from these routes must also include these headers.
+
+CRITICAL RULE — Client vs Server: Never import createClientSupabaseClient in API routes.
+Only use createServerSupabaseClient from lib/supabase/server.ts in API routes.
+Never import lib/anthropic.ts in any file with 'use client'.
+
+Build these API routes:
+
+1. app/api/capture/route.ts
+   - Export OPTIONS function for CORS (see above — this is mandatory)
+   - POST: verify x-engram-secret header, receive {pairs, tool, url, userId},
+     call Claude Haiku to extract {title, summary, key_decisions, technologies, context_md},
+     insert into context_snapshots, return {success, id, title, summary}
+   - Add CORS headers to every NextResponse returned from POST
+
+2. app/api/contexts/route.ts
+   - GET: auth check, filter by tool/search/teamId, return paginated list
+
+3. app/api/contexts/[id]/route.ts
+   - GET: single context, DELETE: own contexts only
+
+4. app/api/contexts/[id]/export/route.ts  
+   - GET: return context_md as a text/plain file download named "context.md"
+
+5. app/api/ask/route.ts
+   - POST: auth check, full-text search context_snapshots with the query,
+     call Claude Sonnet to synthesize answer from top 8 results,
+     save to kt_queries, return {answer, sources, queryId}
+
+6. app/api/resume/route.ts
+   - GET: return the most recent context_snapshot for the authenticated user
+     (optionally filtered by ?tool=claude|chatgpt|gemini)
+
+7. app/api/slack/command/route.ts
+   - POST: receive Slack slash command body (form data), look up team by slack_team_id,
+     search team's contexts, synthesize answer with Haiku, return Slack block kit message
+
+STOP. Tell me what you built and wait for my next message.
