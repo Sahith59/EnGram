@@ -207,8 +207,24 @@ create policy "team members can view their team"
 
 create policy "team owners can update their team"
   on public.teams for update
-  using (id = public.my_team_id())
-  with check (id = public.my_team_id());
+  using (
+    id = public.my_team_id()
+    and exists (
+      select 1 from public.profiles
+      where id = auth.uid()
+      and role in ('owner', 'admin')
+      and team_id = public.my_team_id()
+    )
+  )
+  with check (
+    id = public.my_team_id()
+    and exists (
+      select 1 from public.profiles
+      where id = auth.uid()
+      and role in ('owner', 'admin')
+      and team_id = public.my_team_id()
+    )
+  );
 
 -- Profiles: users can read profiles in their team
 create policy "team members can view profiles"
