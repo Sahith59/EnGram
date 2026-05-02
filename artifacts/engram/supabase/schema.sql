@@ -37,7 +37,7 @@ create table if not exists public.profiles (
 create table if not exists public.context_snapshots (
   id                  uuid primary key default uuid_generate_v4(),
   team_id             uuid not null references public.teams(id) on delete cascade,
-  created_by          uuid not null references public.profiles(id) on delete set null,
+  created_by          uuid references public.profiles(id) on delete set null,
   title               text not null,
   summary             text,
   ai_tool             text not null check (ai_tool in ('chatgpt', 'claude', 'gemini', 'other')),
@@ -55,7 +55,7 @@ create table if not exists public.context_snapshots (
 create table if not exists public.kt_queries (
   id                  uuid primary key default uuid_generate_v4(),
   team_id             uuid not null references public.teams(id) on delete cascade,
-  asked_by            uuid not null references public.profiles(id) on delete set null,
+  asked_by            uuid references public.profiles(id) on delete set null,
   question            text not null,
   answer              text,
   source_snapshot_ids uuid[] not null default '{}',
@@ -79,7 +79,7 @@ create table if not exists public.integrations (
 create table if not exists public.extension_events (
   id          uuid primary key default uuid_generate_v4(),
   team_id     uuid not null references public.teams(id) on delete cascade,
-  user_id     uuid not null references public.profiles(id) on delete set null,
+  user_id     uuid references public.profiles(id) on delete set null,
   ai_tool     text not null check (ai_tool in ('chatgpt', 'claude', 'gemini', 'other')),
   raw_payload jsonb not null default '{}',
   processed   boolean not null default false,
