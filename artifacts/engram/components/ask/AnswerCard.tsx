@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import Link from "next/link";
-import { Sparkles, ArrowUpRight } from "lucide-react";
+import { Sparkles, ArrowUpRight, Info } from "lucide-react";
 import { ToolBadge } from "@/components/context/ToolBadge";
 import { formatRelativeTime } from "@/lib/utils";
 import type { AITool } from "@/types";
@@ -15,15 +15,26 @@ export interface AnswerSource {
   created_at: string;
 }
 
+export interface RelatedSource {
+  id: string;
+  title: string;
+  ai_tool: AITool | string;
+  created_at: string;
+  similarity?: number;
+  keywordHits?: number;
+}
+
 export function AnswerCard({
   question,
   answer,
   sources,
+  related = [],
   confidence,
 }: {
   question: string;
   answer: string;
   sources: AnswerSource[];
+  related?: RelatedSource[];
   confidence?: number | null;
 }) {
   return (
@@ -87,6 +98,63 @@ export function AnswerCard({
                     {formatRelativeTime(src.created_at)}
                   </span>
                   <ArrowUpRight className="h-3.5 w-3.5 text-gh-muted group-hover:text-engram-light transition-colors" />
+                </Link>
+              </motion.div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {related.length > 0 && (
+        <div className="space-y-2">
+          {sources.length === 0 && (
+            <p className="text-[11px] text-gh-muted/80 px-1 italic">
+              Claude didn&apos;t directly cite a source for the answer above,
+              but these captures came up in the search — open them to verify.
+            </p>
+          )}
+          <div className="flex items-center gap-1.5 px-1">
+            <p className="text-[11px] font-mono uppercase tracking-wider text-gh-muted">
+              Related captures
+            </p>
+            <span
+              className="inline-flex items-center"
+              title="These captures matched your search but Claude didn't cite them in the answer above. Open them to verify yourself."
+            >
+              <Info className="h-3 w-3 text-gh-muted/60" />
+            </span>
+            <span className="text-[10px] font-mono text-gh-muted/60">
+              · not directly cited
+            </span>
+          </div>
+          <div className="grid gap-2">
+            {related.map((src, i) => (
+              <motion.div
+                key={src.id}
+                initial={{ opacity: 0, x: -8 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.1 + i * 0.05 }}
+              >
+                <Link
+                  href={`/context/${src.id}`}
+                  className="group flex items-center gap-3 p-2.5 rounded-lg border border-dashed border-gh-border/70 bg-gh-canvas/40 hover:border-engram/30 hover:bg-gh-canvas/70 transition-all"
+                >
+                  <ToolBadge tool={src.ai_tool} />
+                  <span className="flex-1 text-[13px] text-gh-muted truncate group-hover:text-gh-text transition-colors">
+                    {src.title}
+                  </span>
+                  {typeof src.similarity === "number" && src.similarity > 0 && (
+                    <span
+                      className="font-mono text-[10px] text-gh-muted/70 shrink-0"
+                      title={`Cosine similarity ${src.similarity.toFixed(2)}${src.keywordHits ? ` · ${src.keywordHits} keyword hit${src.keywordHits === 1 ? "" : "s"}` : ""}`}
+                    >
+                      sim {src.similarity.toFixed(2)}
+                    </span>
+                  )}
+                  <span className="font-mono text-[10px] text-gh-muted/70 shrink-0">
+                    {formatRelativeTime(src.created_at)}
+                  </span>
+                  <ArrowUpRight className="h-3 w-3 text-gh-muted/60 group-hover:text-engram-light transition-colors" />
                 </Link>
               </motion.div>
             ))}

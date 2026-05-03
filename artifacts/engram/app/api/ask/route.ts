@@ -285,7 +285,10 @@ export async function POST(request: NextRequest) {
   // calling themselves" scores ~0.26). Raising this threshold mostly
   // hurts recall without improving precision noticeably.
   const SEMANTIC_QUALIFY = 0.2;
-  const scored = results
+  // Full sorted pool — keep ALL qualifying candidates so the related
+  // tier (Phase 7.3) can draw from items that didn't win a cited slot
+  // but are still genuinely relevant.
+  const scoredAll = results
     .map((r) => {
       const ks = keywordScore(r);
       const sim = similarityById.get(r.id) ?? 0;
@@ -312,8 +315,9 @@ export async function POST(request: NextRequest) {
       (a, b) =>
         b.total - a.total ||
         +new Date(b.row.created_at) - +new Date(a.row.created_at)
-    )
-    .slice(0, 4);
+    );
+  // Top-4 go to Claude as candidate sources for citation.
+  const scored = scoredAll.slice(0, 4);
   const sources = scored.map((s) => s.row);
 
   if (sources.length === 0) {
@@ -326,6 +330,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       answer: hint,
       sources: [],
+      related: [],
       queryId: null,
       scope,
     });
@@ -385,11 +390,13 @@ Strict rules:
     return NextResponse.json({ error: "AI synthesis failed" }, { status: 500 });
   }
 
-  // ----- Honest source filter -----
-  // Only return sources that Claude actually CITED in the answer. Anything
-  // we fetched but the model didn't use was off-topic noise; showing it as
-  // a "source" would lie to the user. Renumber [N] markers in the answer
-  // so the displayed citations stay 1..K with no gaps.
+  // ----- Honest source filter (Phase 7.3) -----
+  // Authoritative `sources` = only what Claude actually CITED. Anything
+  // shown there is grounded in the answer text via [N] markers.
+  // `related` = strong retrievals Claude DIDN'T cite — surfaced separately
+  // so the user can self-verify rather than us hiding potentially-useful
+  // captures. We use a higher confidence bar than initial qualification
+  // (sim ≥ 0.30 OR ks ≥ 2) to avoid noise.
   const citedNumbers = new Set<number>();
   const citationRegex = /\[(\d+)\]/g;
   let cm: RegExpExecArray | null;
@@ -398,15 +405,32 @@ Strict rules:
     if (n >= 1 && n <= sources.length) citedNumbers.add(n);
   }
 
-  // If the model produced a real answer with no citations (e.g. the
-  // "I don't have a captured conversation..." escape hatch), drop all
-  // sources. Otherwise keep only the cited ones.
   const isNoMatch = /^i don'?t have a captured conversation/i.test(answer.trim());
+
+  // Build `related`: strong-but-uncited candidates from the FULL scored
+  // pool (not just top-4 that competed for cited slots). Threshold is
+  // aligned with initial qualification (`ks >= minKeywordScore`) so a
+  // single-token query with `minKeywordScore=1` doesn't silently
+  // suppress all related items, while sim >= 0.30 stays as the higher
+  // semantic bar for embedding-based hits.
+  const RELATED_SIM = 0.3;
+  const RELATED_CAP = 3;
+  const citedIds = new Set(
+    [...citedNumbers].map((n) => sources[n - 1]?.id).filter(Boolean)
+  );
+  const relatedRaw = scoredAll
+    .filter((s) => !citedIds.has(s.row.id))
+    .filter((s) => s.sim >= RELATED_SIM || s.ks >= minKeywordScore)
+    .slice(0, RELATED_CAP);
 
   let finalSources = sources;
   let finalAnswer = answer;
+  let related: typeof relatedRaw = [];
   if (isNoMatch) {
+    // Claude explicitly disclaimed — don't pad with "related" to avoid
+    // contradicting the no-match message.
     finalSources = [];
+    related = [];
   } else if (citedNumbers.size > 0) {
     const orderedOldNumbers = [...citedNumbers].sort((a, b) => a - b);
     const renumberMap = new Map<number, number>();
@@ -419,10 +443,13 @@ Strict rules:
     finalSources = orderedOldNumbers
       .map((oldN) => sources[oldN - 1])
       .filter(Boolean);
+    related = relatedRaw;
   } else {
-    // No citations at all — be honest and return zero sources rather than
-    // implying the answer was grounded in something specific.
+    // Answer with no citations at all — Claude synthesized text without
+    // grounding. Don't claim cited sources, but still surface strong
+    // retrievals so the user can sanity-check the answer themselves.
     finalSources = [];
+    related = relatedRaw;
   }
 
   const { data: savedQuery } = await supabase
@@ -451,6 +478,16 @@ Strict rules:
       created_at: s.created_at,
       visibility: s.visibility ?? "personal",
       author_handle: s.author_handle ?? null,
+    })),
+    related: related.map((r) => ({
+      id: r.row.id,
+      title: r.row.title,
+      ai_tool: r.row.ai_tool,
+      created_at: r.row.created_at,
+      visibility: r.row.visibility ?? "personal",
+      author_handle: r.row.author_handle ?? null,
+      similarity: Math.round(r.sim * 100) / 100,
+      keywordHits: r.ks,
     })),
     queryId: savedQuery?.id ?? null,
   });

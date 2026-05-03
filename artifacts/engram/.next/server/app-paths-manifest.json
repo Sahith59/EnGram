@@ -1,3 +1,3 @@
 {
-  "/api/digest/route": "app/api/digest/route.js"
+  "/api/ask/route": "app/api/ask/route.js"
 }

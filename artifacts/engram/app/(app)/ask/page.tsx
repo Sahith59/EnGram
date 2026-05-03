@@ -3,7 +3,11 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { QueryInput } from "@/components/ask/QueryInput";
-import { AnswerCard, type AnswerSource } from "@/components/ask/AnswerCard";
+import {
+  AnswerCard,
+  type AnswerSource,
+  type RelatedSource,
+} from "@/components/ask/AnswerCard";
 import { Sparkles, User, Users, Globe } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -11,6 +15,7 @@ interface QueryRecord {
   question: string;
   answer: string;
   sources: AnswerSource[];
+  related: RelatedSource[];
   confidence?: number | null;
   scope?: "personal" | "team" | "all";
   ts: number;
@@ -42,6 +47,7 @@ export default function AskPage() {
             question,
             answer: data.answer,
             sources: data.sources ?? [],
+            related: data.related ?? [],
             confidence: data.confidence,
             scope: data.scope ?? scope,
             ts: Date.now(),
@@ -123,6 +129,7 @@ export default function AskPage() {
               question={q.question}
               answer={q.answer}
               sources={q.sources}
+              related={q.related}
               confidence={q.confidence}
             />
           ))}
