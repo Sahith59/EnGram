@@ -70,6 +70,14 @@ export async function POST(request: NextRequest) {
     "those","what","which","who","how","why","when","where","do","does","did",
     "i","me","my","you","your","we","us","our","they","them","their","can",
     "could","should","would","will","about","tell","explain","show","find",
+    // Generic question/filler words that match almost any chat — they
+    // should NEVER be the only thing tying a source to a query.
+    "concept","concepts","idea","ideas","brief","briefly","summary","summarize",
+    "summarise","overview","explain","explanation","explained","example",
+    "examples","describe","description","note","notes","thing","things","stuff",
+    "please","kindly","thanks","also","just","like","want","need","know","help",
+    "give","make","get","see","understand","understanding","quick","quickly",
+    "simple","simply","detail","details","detailed","short","long",
   ]);
   const tokens = question
     .toLowerCase()
@@ -133,14 +141,18 @@ export async function POST(request: NextRequest) {
     }
     const { data, error } = await q;
     if (error) {
-      // Graceful fallback if migration not applied
+      // Graceful fallback if migration not applied:
+      // - team scope is "not unlocked yet" → return empty.
+      // - personal scope → search the asker's own captures.
       if (/visibility|author_handle/i.test(error.message ?? "")) {
+        if (s === "team") return [];
         const legacy = await supabase
           .from("context_snapshots")
           .select(
             "id, title, summary, decision, rationale, ai_tool, tags, created_at, created_by"
           )
           .eq("team_id", profile!.team_id)
+          .eq("created_by", user!.id)
           .or(orClause)
           .order("created_at", { ascending: false })
           .limit(8);
@@ -168,7 +180,47 @@ export async function POST(request: NextRequest) {
     results = await fetchScoped(scope);
   }
 
-  const sources = results;
+  // ----- Relevance scoring -----
+  // The OR-match is intentionally loose for recall, but we don't want every
+  // loosely-matching row to show up as a "source". Score each candidate by
+  // how many distinct meaningful tokens appear anywhere in its searchable
+  // text, then keep only the strong ones.
+  function scoreRow(r: SourceRow): number {
+    if (tokens.length === 0) return 1;
+    const hay = [
+      r.title ?? "",
+      r.summary ?? "",
+      r.decision ?? "",
+      r.rationale ?? "",
+      Array.isArray(r.tags) ? r.tags.join(" ") : "",
+    ]
+      .join(" ")
+      .toLowerCase();
+    let score = 0;
+    for (const t of tokens) {
+      if (hay.includes(t)) score++;
+    }
+    return score;
+  }
+  // Require a meaningful match: when the question has >=2 meaningful tokens,
+  // demand at least 2 distinct hits OR a single hit on a token longer than
+  // 5 chars (a long, specific word like "recursion" is enough on its own).
+  const minScore = tokens.length >= 2 ? 2 : 1;
+  const scored = results
+    .map((r) => ({ row: r, score: scoreRow(r) }))
+    .filter(({ row, score }) => {
+      if (score >= minScore) return true;
+      if (score >= 1 && tokens.some((t) => t.length >= 6 && (
+        (row.title ?? "").toLowerCase().includes(t) ||
+        (row.summary ?? "").toLowerCase().includes(t) ||
+        (row.decision ?? "").toLowerCase().includes(t) ||
+        (row.rationale ?? "").toLowerCase().includes(t)
+      ))) return true;
+      return false;
+    })
+    .sort((a, b) => b.score - a.score || +new Date(b.row.created_at) - +new Date(a.row.created_at))
+    .slice(0, 4);
+  const sources = scored.map((s) => s.row);
 
   if (sources.length === 0) {
     const hint =
