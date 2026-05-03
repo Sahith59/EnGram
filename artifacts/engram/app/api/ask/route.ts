@@ -262,19 +262,20 @@ Rationale: ${s.rationale ? s.rationale.slice(0, 400) : "N/A"}`;
       messages: [
         {
           role: "user",
-          content: `You are a knowledge assistant. Based on the following captured AI conversation contexts, answer the question.
+          content: `You are a precise knowledge assistant. Answer the user's question using ONLY the captured contexts that are actually relevant to the question.
 
 Question: ${question}
 
-Relevant contexts:
+Candidate contexts (some may be irrelevant — IGNORE any that don't substantively answer the question):
 ${contextBlock}
 
-Instructions:
-- Answer directly and specifically based on the provided contexts
-- Cite sources using [1], [2], etc.
-- If the contexts don't fully answer the question, say so honestly
-- Be concise (2-4 paragraphs max)
-- End with: CONFIDENCE: [0.0-1.0] (your confidence that this answer is correct based on the sources)`,
+Strict rules:
+- Use a context ONLY if its content directly addresses the question. If it merely mentions a related word but is about a different topic, DO NOT cite it.
+- Cite the contexts you actually use with [1], [2], etc. matching the numbering above.
+- DO NOT cite a context just to pad the answer. Better to cite one source well than four loosely.
+- If NONE of the contexts answer the question, respond exactly with: "I don't have a captured conversation that answers this. Try rephrasing, or capture a chat on this topic."
+- Be concise (2-4 paragraphs max). No filler.
+- End with a single line: CONFIDENCE: [0.0-1.0]`,
         },
       ],
     });
@@ -290,14 +291,54 @@ Instructions:
     return NextResponse.json({ error: "AI synthesis failed" }, { status: 500 });
   }
 
+  // ----- Honest source filter -----
+  // Only return sources that Claude actually CITED in the answer. Anything
+  // we fetched but the model didn't use was off-topic noise; showing it as
+  // a "source" would lie to the user. Renumber [N] markers in the answer
+  // so the displayed citations stay 1..K with no gaps.
+  const citedNumbers = new Set<number>();
+  const citationRegex = /\[(\d+)\]/g;
+  let cm: RegExpExecArray | null;
+  while ((cm = citationRegex.exec(answer)) !== null) {
+    const n = parseInt(cm[1], 10);
+    if (n >= 1 && n <= sources.length) citedNumbers.add(n);
+  }
+
+  // If the model produced a real answer with no citations (e.g. the
+  // "I don't have a captured conversation..." escape hatch), drop all
+  // sources. Otherwise keep only the cited ones.
+  const isNoMatch = /^i don'?t have a captured conversation/i.test(answer.trim());
+
+  let finalSources = sources;
+  let finalAnswer = answer;
+  if (isNoMatch) {
+    finalSources = [];
+  } else if (citedNumbers.size > 0) {
+    const orderedOldNumbers = [...citedNumbers].sort((a, b) => a - b);
+    const renumberMap = new Map<number, number>();
+    orderedOldNumbers.forEach((oldN, i) => renumberMap.set(oldN, i + 1));
+    finalAnswer = answer.replace(/\[(\d+)\]/g, (_match, g1) => {
+      const n = parseInt(g1, 10);
+      const newN = renumberMap.get(n);
+      return newN ? `[${newN}]` : "";
+    });
+    finalSources = orderedOldNumbers
+      .map((oldN) => sources[oldN - 1])
+      .filter(Boolean);
+  } else {
+    // No citations at all — be honest and return zero sources rather than
+    // implying the answer was grounded in something specific.
+    finalSources = [];
+  }
+
   const { data: savedQuery } = await supabase
     .from("kt_queries")
     .insert({
       team_id: profile.team_id,
       asked_by: user.id,
       question,
-      answer,
-      source_snapshot_ids: sources.map((s) => s.id),
+      answer: finalAnswer,
+      source_snapshot_ids: finalSources.map((s) => s.id),
       confidence:
         confidence !== null ? Math.min(1, Math.max(0, confidence)) : null,
     })
@@ -305,10 +346,10 @@ Instructions:
     .single();
 
   return NextResponse.json({
-    answer,
+    answer: finalAnswer,
     confidence,
     scope,
-    sources: sources.map((s, i) => ({
+    sources: finalSources.map((s, i) => ({
       ref: i + 1,
       id: s.id,
       title: s.title,
