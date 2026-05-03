@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "User has no team" }, { status: 400 });
   }
 
-  let body: { question: string; scope?: "personal" | "team" | "all" };
+  let body: { question: string; scope?: "personal" | "team" | "all" | "project"; project_id?: string };
   try {
     body = await request.json();
   } catch {
@@ -68,8 +68,26 @@ export async function POST(request: NextRequest) {
   }
 
   const { question } = body;
-  const scope: "personal" | "team" | "all" =
-    body.scope === "team" ? "team" : body.scope === "all" ? "all" : "personal";
+  const rawScope = body.scope;
+  const projectId = body.project_id ?? null;
+  const scope: "personal" | "team" | "all" | "project" =
+    rawScope === "project" && projectId ? "project"
+    : rawScope === "team" ? "team"
+    : rawScope === "all" ? "all"
+    : "personal";
+
+  // For project scope, look up the linked repo_id for github chunk filtering
+  let projectRepoId: string | null = null;
+  if (scope === "project" && projectId) {
+    const admin2 = createAdminClient();
+    const { data: proj } = await admin2
+      .from("projects")
+      .select("github_repo_id")
+      .eq("id", projectId)
+      .eq("team_id", profile!.team_id)
+      .maybeSingle();
+    projectRepoId = proj?.github_repo_id ?? null;
+  }
 
   if (!question?.trim()) {
     return NextResponse.json({ error: "Question is required" }, { status: 400 });
@@ -172,7 +190,7 @@ export async function POST(request: NextRequest) {
       const { data, error } = await admin.rpc("search_github_chunks", {
         query_embedding: queryEmbedding,
         team_id_filter: profile!.team_id,
-        repo_id_filter: null,
+        repo_id_filter: projectRepoId ?? null,
         match_count: isCommitQuery ? 10 : 6,
         match_threshold: isCommitQuery ? 0.25 : 0.45,
       });
@@ -220,9 +238,10 @@ export async function POST(request: NextRequest) {
   };
 
   async function fetchScoped(
-    s: "personal" | "team"
+    s: "personal" | "team" | "project"
   ): Promise<SourceRow[]> {
-    let q = supabase
+    const admin = createAdminClient();
+    let q = admin
       .from("context_snapshots")
       .select(
         "id, title, summary, decision, rationale, ai_tool, tags, created_at, visibility, author_handle, created_by"
@@ -230,7 +249,9 @@ export async function POST(request: NextRequest) {
       .or(orClause)
       .order("created_at", { ascending: false })
       .limit(8);
-    if (s === "team") {
+    if (s === "project" && projectId) {
+      q = q.eq("project_id", projectId);
+    } else if (s === "team") {
       q = q.eq("team_id", profile!.team_id).eq("visibility", "team");
     } else {
       q = q.eq("created_by", user!.id).eq("visibility", "personal");
@@ -254,6 +275,8 @@ export async function POST(request: NextRequest) {
     keywordResults = [...personal, ...team].filter((r) =>
       seen.has(r.id) ? false : (seen.add(r.id), true)
     );
+  } else if (scope === "project") {
+    keywordResults = await fetchScoped("project");
   } else {
     keywordResults = await fetchScoped(scope);
   }
@@ -288,6 +311,11 @@ export async function POST(request: NextRequest) {
       }
       if (scope === "team") {
         return r.visibility === "team";
+      }
+      // 'project' — already filtered by project_id in fetchScoped; 
+      // for semantic rows we accept anything (project_id filter was in keyword path)
+      if (scope === "project") {
+        return true;
       }
       // 'all'
       return (

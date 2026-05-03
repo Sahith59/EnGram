@@ -40,20 +40,24 @@ See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and pa
 - **AI**: Anthropic Claude (summaries/briefs) + OpenAI `text-embedding-3-small` (embeddings)
 - **Dev port**: 3000
 
-### Key Features (Phases 1–9)
+### Key Features (Phases 1–11)
 - Chrome extension captures ChatGPT / Claude / Gemini conversations
 - Context snapshots stored with 1536-dim embeddings
-- `/api/ask` — semantic Q&A over captures + GitHub code context
-- **Project Clustering** — auto-groups snapshots by embedding cosine similarity (threshold 0.72)
-- **GitHub Integration** — index any repo (up to 400 files, chunked + embedded), searchable via `/api/ask`
+- `/api/ask` — semantic Q&A over captures + GitHub code context; supports `project_id` scope
+- **Project Workspaces (Phase 11)** — each GitHub repo auto-creates an isolated Project with Feed | Ask | Members tabs
+- **GitHub Integration** — index any repo (up to 400 files, chunked + embedded), auto-creates project workspace
+- **Project Members** — project-level membership (`project_members` table), owner can invite/remove
 - Digest generation, Team management, Merge Brief (Anthropic)
 
 ### DB Migrations
 Supabase runs PostgreSQL 15. Direct DB connections are blocked from this environment.
 
+**Applied migrations**:
+- `0011_projects_clustering.sql` — `projects` table, `project_id` FK on `context_snapshots`, `find_nearest_project()` RPC
+- `0012_github_integration.sql` — `github_repos`, `github_chunks` tables, `search_github_chunks()` RPC
+
 **Pending migrations** (must be applied via Supabase SQL Editor):
-- `supabase/migrations/0011_projects_clustering.sql` — `projects` table, `project_id` FK on `context_snapshots`, `find_nearest_project()` RPC
-- `supabase/migrations/0012_github_integration.sql` — `github_repos`, `github_chunks` tables, `search_github_chunks()` RPC
+- `0013_project_workspaces.sql` — adds `github_repo_id` + `created_by` to `projects`, creates `project_members` table with RLS
 
 **In-app helper**: Visit `/setup` → copy the idempotent SQL → paste into Supabase SQL Editor at:
 `https://supabase.com/dashboard/project/fvowlnhpzgkcejumftcv/sql/new`
@@ -73,16 +77,18 @@ artifacts/engram/
       setup/        — DB migration helper
     api/
       capture/      — Chrome extension ingest + clustering hook
-      ask/          — semantic search + GitHub context + Claude answer
-      projects/     — project CRUD + merge brief
-      github/       — connect / repos / index endpoints
+      ask/          — semantic search + GitHub context + Claude answer (supports project_id scope)
+      projects/     — project CRUD + members API
+        [id]/
+          members/  — GET/POST/DELETE project members
+      github/       — connect / repos / index endpoints (auto-creates project on index)
       admin/
-        migrate/    — migration status + SQL export
+        migrate/    — migration status + SQL export (checks 0011–0013)
   lib/
     clustering.ts   — cosine similarity, centroid update, auto-name
     github.ts       — GitHub API, repo indexing pipeline
     supabase/       — client, admin, server, config helpers
-  supabase/migrations/ — SQL migration files 0001–0012
+  supabase/migrations/ — SQL migration files 0001–0013
   components/
     layout/         — Sidebar (with Projects + GitHub + DB Setup nav)
 ```

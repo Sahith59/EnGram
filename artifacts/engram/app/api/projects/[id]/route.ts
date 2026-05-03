@@ -28,22 +28,59 @@ export async function GET(
   const admin = createAdminClient();
   const { data: project, error: pErr } = await admin
     .from("projects")
-    .select("id, name, description, snapshot_count, created_at, updated_at")
+    .select("id, name, description, snapshot_count, created_at, updated_at, github_repo_id, created_by")
     .eq("id", params.id)
     .eq("team_id", profile.team_id)
     .single();
 
   if (pErr || !project) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { data: snapshots } = await admin
-    .from("context_snapshots")
-    .select(
-      "id, title, summary, ai_tool, tags, decision, created_at, visibility, author_handle, created_by"
-    )
-    .eq("project_id", params.id)
-    .order("created_at", { ascending: true });
+  const [snapsRes, repoRes, membersRes] = await Promise.all([
+    admin
+      .from("context_snapshots")
+      .select("id, title, summary, ai_tool, tags, decision, created_at, visibility, author_handle, created_by")
+      .eq("project_id", params.id)
+      .order("created_at", { ascending: true }),
+    project.github_repo_id
+      ? admin.from("github_repos")
+          .select("id, repo_full_name, repo_name, owner_login, file_count, chunk_count, indexed_at, default_branch, is_private")
+          .eq("id", project.github_repo_id).single()
+      : Promise.resolve({ data: null }),
+    admin.from("project_members")
+      .select("id, user_id, role, joined_at")
+      .eq("project_id", params.id)
+      .order("joined_at", { ascending: true }),
+  ]);
 
-  return NextResponse.json({ project, snapshots: snapshots ?? [] });
+  // Enrich members with profile info
+  const rawMembers = (membersRes.data ?? []) as { id: string; user_id: string; role: string; joined_at: string }[];
+  let members: unknown[] = rawMembers;
+  if (rawMembers.length) {
+    const { data: profiles } = await admin
+      .from("profiles")
+      .select("id, full_name, display_name, avatar_url, email")
+      .in("id", rawMembers.map((m) => m.user_id));
+    const profileMap = new Map((profiles ?? []).map((p) => [p.id, p]));
+    members = rawMembers.map((m) => ({
+      ...m,
+      profile: profileMap.get(m.user_id) ?? null,
+      is_self: m.user_id === user.id,
+    }));
+  }
+
+  const myMembership = rawMembers.find((m) => m.user_id === user.id);
+
+  return NextResponse.json({
+    project: {
+      ...project,
+      repo: (repoRes as { data: unknown }).data ?? null,
+      member_count: rawMembers.length,
+      is_owner: myMembership?.role === "owner",
+      is_member: !!myMembership,
+    },
+    snapshots: snapsRes.data ?? [],
+    members,
+  });
 }
 
 /**

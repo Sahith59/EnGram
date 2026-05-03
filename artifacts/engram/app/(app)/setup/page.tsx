@@ -13,13 +13,15 @@ type MigrationStatus = {
   github_repos: boolean;
   github_chunks: boolean;
   project_id_col: boolean;
+  project_workspaces: boolean;
 };
 
 const CHECKS: { key: keyof MigrationStatus; label: string; description: string }[] = [
-  { key: "projects", label: "Projects table", description: "Stores auto-clustered project groups" },
+  { key: "projects", label: "Projects table", description: "Stores project groups (auto-clustered or repo-linked)" },
   { key: "project_id_col", label: "project_id column", description: "Links snapshots to projects" },
   { key: "github_repos", label: "GitHub repos table", description: "Tracks indexed repositories" },
   { key: "github_chunks", label: "GitHub chunks table", description: "Stores indexed code with embeddings" },
+  { key: "project_workspaces", label: "Project Workspaces (0013)", description: "github_repo_id + project_members table for isolated team workspaces" },
 ];
 
 export default function SetupPage() {

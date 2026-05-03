@@ -106,12 +106,56 @@ export async function POST(request: NextRequest) {
       })
       .eq("id", repoRow.id);
 
+    // ── Auto-create or link a Project for this repo ──────────────────────
+    let projectId: string | null = null;
+    try {
+      // Check if a project already linked to this repo exists
+      const { data: existingProject } = await admin
+        .from("projects")
+        .select("id")
+        .eq("github_repo_id", repoRow.id)
+        .eq("team_id", profile.team_id)
+        .maybeSingle();
+
+      if (existingProject) {
+        projectId = existingProject.id;
+        // Update stats
+        await admin.from("projects")
+          .update({ updated_at: new Date().toISOString() })
+          .eq("id", existingProject.id);
+      } else {
+        // Create a new project named after the repo
+        const { data: newProject } = await admin
+          .from("projects")
+          .insert({
+            team_id: profile.team_id,
+            name: repoName,
+            description: `GitHub: ${repoFullName}`,
+            github_repo_id: repoRow.id,
+            created_by: user.id,
+          })
+          .select("id")
+          .single();
+
+        if (newProject) {
+          projectId = newProject.id;
+          // Add indexer as project owner
+          await admin.from("project_members").upsert({
+            project_id: newProject.id,
+            user_id: user.id,
+            role: "owner",
+          }, { onConflict: "project_id,user_id" });
+        }
+      }
+    } catch { /* project_members table may not exist yet — ignore */ }
+
     return NextResponse.json({
       ok: true,
       repoId: repoRow.id,
       fileCount,
       chunkCount: totalChunks,
       commitChunks,
+      projectId,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

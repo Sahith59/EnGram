@@ -168,6 +168,8 @@ async function checkMigrationStatus() {
     admin.from("github_repos").select("id").limit(1),
     admin.from("github_chunks").select("id").limit(1),
     admin.from("context_snapshots").select("project_id").limit(1),
+    admin.from("projects").select("github_repo_id").limit(1),
+    admin.from("project_members").select("id").limit(1),
   ]);
 
   return {
@@ -175,6 +177,7 @@ async function checkMigrationStatus() {
     github_repos: checks[1].error?.code !== "PGRST205",
     github_chunks: checks[2].error?.code !== "PGRST205",
     project_id_col: checks[3].error?.code !== "42703",
+    project_workspaces: checks[4].error?.code !== "42703" && checks[5].error?.code !== "PGRST205",
   };
 }
 
