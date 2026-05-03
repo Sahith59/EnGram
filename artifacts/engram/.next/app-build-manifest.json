@@ -70,6 +70,16 @@
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/(app)/setup/page.js"
+    ],
+    "/(app)/settings/github/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(app)/settings/github/page.js"
+    ],
+    "/(app)/projects/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(app)/projects/page.js"
     ]
   }
 }

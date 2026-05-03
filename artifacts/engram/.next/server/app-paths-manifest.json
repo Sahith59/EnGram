@@ -1,10 +1,9 @@
 {
   "/api/capture/route": "app/api/capture/route.js",
-  "/api/admin/migrate/route": "app/api/admin/migrate/route.js",
+  "/api/github/connect/route": "app/api/github/connect/route.js",
   "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
+  "/(app)/projects/page": "app/(app)/projects/page.js",
   "/(app)/settings/extension/page": "app/(app)/settings/extension/page.js",
-  "/(app)/team/page": "app/(app)/team/page.js",
-  "/(app)/context/[id]/page": "app/(app)/context/[id]/page.js",
-  "/(app)/digest/page": "app/(app)/digest/page.js",
-  "/(app)/setup/page": "app/(app)/setup/page.js"
+  "/(app)/settings/github/page": "app/(app)/settings/github/page.js",
+  "/(app)/settings/page": "app/(app)/settings/page.js"
 }
