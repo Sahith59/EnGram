@@ -1,6 +1,5 @@
 {
   "/api/capture/route": "app/api/capture/route.js",
-  "/api/me/route": "app/api/me/route.js",
   "/(app)/ask/page": "app/(app)/ask/page.js",
   "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
   "/(app)/projects/page": "app/(app)/projects/page.js",
