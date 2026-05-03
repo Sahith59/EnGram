@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { anthropic } from "@/lib/anthropic";
 import { corsOptions, withCors } from "@/lib/cors";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
+import { ensureUserTeam } from "@/lib/team";
 
 export function OPTIONS(request: NextRequest) {
   return corsOptions(request);
@@ -43,7 +44,12 @@ export async function POST(request: NextRequest) {
   // ----- Resolve identity -----
   const supabase = await createClient();
   const sessionRes = await supabase.auth.getUser();
-  let userId: string | null = sessionRes.data.user?.id ?? null;
+  const sessionUser = sessionRes.data.user;
+  let userId: string | null = sessionUser?.id ?? null;
+  let userEmail: string | null = sessionUser?.email ?? null;
+  let userMeta = sessionUser?.user_metadata as
+    | { full_name?: string; avatar_url?: string }
+    | undefined;
 
   if (!userId) {
     // Fallback: shared-secret + explicit userId
@@ -74,20 +80,20 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ----- Resolve team_id -----
+  // ----- Resolve team_id (auto-create personal workspace if missing) -----
   const admin = createAdminClient();
   let resolvedTeamId = teamId;
   if (!resolvedTeamId) {
-    const { data: profile } = await admin
-      .from("profiles")
-      .select("team_id")
-      .eq("id", userId)
-      .maybeSingle();
-    resolvedTeamId = profile?.team_id ?? undefined;
+    resolvedTeamId =
+      (await ensureUserTeam({
+        id: userId,
+        email: userEmail,
+        user_metadata: userMeta ?? null,
+      })) ?? undefined;
   }
   if (!resolvedTeamId) {
     return withCors(
-      NextResponse.json({ error: "User has no team" }, { status: 400 }),
+      NextResponse.json({ error: "Could not bootstrap workspace" }, { status: 500 }),
       request
     );
   }

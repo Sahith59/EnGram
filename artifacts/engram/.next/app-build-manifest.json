@@ -31,6 +31,21 @@
       "static/chunks/main-app.js",
       "static/chunks/app/(app)/layout.js"
     ],
+    "/(app)/settings/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(app)/settings/page.js"
+    ],
+    "/(app)/team/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(app)/team/page.js"
+    ],
+    "/(app)/ask/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(app)/ask/page.js"
+    ],
     "/(app)/settings/extension/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",

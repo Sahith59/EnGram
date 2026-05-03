@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { corsOptions, withCors } from "@/lib/cors";
+import { ensureUserTeam } from "@/lib/team";
 
 export function OPTIONS(request: NextRequest) {
   return corsOptions(request);
@@ -9,9 +10,8 @@ export function OPTIONS(request: NextRequest) {
 
 /**
  * GET /api/me
- * Returns the currently signed-in user's identity for use by the Chrome
- * extension. Relies on the Supabase session cookie set when the user signs
- * into the dashboard. Cross-origin requests must include credentials.
+ * Returns the currently signed-in user's identity for the Chrome extension.
+ * Auto-creates a personal workspace if the user doesn't have one yet.
  */
 export async function GET(request: NextRequest) {
   if (!isSupabaseConfigured()) {
@@ -34,9 +34,18 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  // Single source of truth for team bootstrap
+  const teamId = await ensureUserTeam({
+    id: user.id,
+    email: user.email,
+    user_metadata: user.user_metadata as
+      | { full_name?: string; avatar_url?: string }
+      | null,
+  });
+
   const { data: profile } = await supabase
     .from("profiles")
-    .select("team_id, full_name, avatar_url")
+    .select("full_name, avatar_url")
     .eq("id", user.id)
     .maybeSingle();
 
@@ -49,7 +58,7 @@ export async function GET(request: NextRequest) {
         full_name: profile?.full_name ?? null,
         avatar_url: profile?.avatar_url ?? null,
       },
-      team_id: profile?.team_id ?? null,
+      team_id: teamId,
     }),
     request
   );
