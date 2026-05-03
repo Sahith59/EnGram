@@ -153,8 +153,27 @@
 
   function toast({ kind = "ok", title, body, sticky = false }) {
     const c = ensureToastContainer();
+
+    // Dedupe: if a toast with the same title is already on screen, do not stack
+    // another one — just refresh its lifetime so it stays visible a moment longer.
+    const key = `${kind}::${title ?? ""}`;
+    const existing = c.querySelector(`[data-engram-key="${CSS.escape(key)}"]`);
+    if (existing) {
+      const prevTimer = Number(existing.dataset.engramTimer || 0);
+      if (prevTimer) clearTimeout(prevTimer);
+      if (!sticky) {
+        const tid = window.setTimeout(() => {
+          existing.classList.remove("engram-toast-in");
+          setTimeout(() => existing.remove(), 300);
+        }, 5000);
+        existing.dataset.engramTimer = String(tid);
+      }
+      return;
+    }
+
     const t = document.createElement("div");
     t.className = `engram-toast engram-toast-${kind}`;
+    t.dataset.engramKey = key;
     t.innerHTML = `
       <div class="engram-toast-head">
         <span class="engram-logo-mini">ENGRAM</span>
@@ -168,10 +187,11 @@
     requestAnimationFrame(() => t.classList.add("engram-toast-in"));
     t.querySelector(".engram-toast-close")?.addEventListener("click", () => t.remove());
     if (!sticky) {
-      setTimeout(() => {
+      const tid = window.setTimeout(() => {
         t.classList.remove("engram-toast-in");
         setTimeout(() => t.remove(), 300);
       }, 5000);
+      t.dataset.engramTimer = String(tid);
     }
   }
 
