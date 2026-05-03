@@ -51,6 +51,13 @@ export async function ensureUserTeam(user: {
     return null;
   }
 
+  // Mark this team as the user's personal workspace (idempotent)
+  await admin
+    .from("teams")
+    .update({ personal_for: user.id })
+    .eq("id", newTeam.id)
+    .is("personal_for", null);
+
   // Upsert the profile with the new team
   const { error: profileErr } = await admin.from("profiles").upsert(
     {
@@ -59,6 +66,7 @@ export async function ensureUserTeam(user: {
       full_name: user.user_metadata?.full_name ?? null,
       avatar_url: user.user_metadata?.avatar_url ?? null,
       team_id: newTeam.id,
+      role: "owner",
     },
     { onConflict: "id" }
   );
@@ -67,6 +75,14 @@ export async function ensureUserTeam(user: {
     console.error("[ensureUserTeam] profile upsert failed:", profileErr);
     return null;
   }
+
+  // Ensure the team_members row exists (multi-team membership)
+  await admin
+    .from("team_members")
+    .upsert(
+      { team_id: newTeam.id, user_id: user.id, role: "owner" },
+      { onConflict: "team_id,user_id" }
+    );
 
   return newTeam.id;
 }

@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
   LayoutDashboard,
@@ -13,6 +12,7 @@ import {
   GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { TeamSwitcher } from "./TeamSwitcher";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -29,26 +29,11 @@ const tools = [
   { id: "gemini", label: "Gemini", color: "bg-tool-gemini" },
 ];
 
-interface TeamChip {
-  name: string;
-  memberCount: number;
-}
-
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeTool = searchParams.get("tool") ?? "all";
-  const [teamChip, setTeamChip] = useState<TeamChip | null>(null);
-
-  useEffect(() => {
-    fetch("/api/team")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (d?.team) setTeamChip({ name: d.team.name, memberCount: d.memberCount ?? 1 });
-      })
-      .catch(() => {});
-  }, [pathname]);
 
   function setToolFilter(toolId: string) {
     const params = new URLSearchParams(searchParams.toString());
@@ -68,24 +53,8 @@ export function Sidebar() {
         </span>
       </div>
 
-      {teamChip && (
-        <Link
-          href="/team"
-          className="mx-3 mt-3 px-3 py-2 rounded-md border border-gh-border bg-gh-canvas hover:border-engram/40 transition-colors group"
-        >
-          <div className="flex items-center gap-2">
-            <Users className="h-3.5 w-3.5 text-gh-muted group-hover:text-engram-light transition-colors shrink-0" />
-            <div className="flex-1 min-w-0">
-              <div className="text-xs font-medium text-gh-text truncate">
-                {teamChip.name}
-              </div>
-              <div className="text-[10px] text-gh-muted">
-                {teamChip.memberCount} {teamChip.memberCount === 1 ? "member" : "members"}
-              </div>
-            </div>
-          </div>
-        </Link>
-      )}
+      <TeamSwitcher />
+
 
       <nav className="px-3 py-4 space-y-0.5">
         {navItems.map((item) => {

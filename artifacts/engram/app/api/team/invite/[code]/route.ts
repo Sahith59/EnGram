@@ -42,13 +42,18 @@ export async function GET(
     return NextResponse.json({ valid: false, reason: validation.reason });
   }
 
-  const [{ data: team }, { data: inviter }, { data: callerProfile }] = await Promise.all([
+  const [{ data: team }, { data: inviter }, { data: existingMembership }] = await Promise.all([
     admin.from("teams").select("id, name, slug").eq("id", invite.team_id).single(),
     admin.from("profiles").select("email, full_name").eq("id", invite.created_by).maybeSingle(),
-    admin.from("profiles").select("team_id").eq("id", user.id).maybeSingle(),
+    admin
+      .from("team_members")
+      .select("team_id")
+      .eq("team_id", invite.team_id)
+      .eq("user_id", user.id)
+      .maybeSingle(),
   ]);
 
-  const alreadyMember = callerProfile?.team_id === invite.team_id;
+  const alreadyMember = !!existingMembership;
 
   return NextResponse.json({
     valid: validation.valid && !alreadyMember,
