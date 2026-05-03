@@ -1,7 +1,13 @@
 {
   "/api/capture/route": "app/api/capture/route.js",
+  "/api/admin/migrate/route": "app/api/admin/migrate/route.js",
   "/api/me/route": "app/api/me/route.js",
-  "/(app)/ask/page": "app/(app)/ask/page.js",
+  "/api/contexts/route": "app/api/contexts/route.js",
+  "/api/contexts/[id]/export/route": "app/api/contexts/[id]/export/route.js",
   "/(app)/settings/github/page": "app/(app)/settings/github/page.js",
-  "/(app)/dashboard/page": "app/(app)/dashboard/page.js"
+  "/(app)/ask/page": "app/(app)/ask/page.js",
+  "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
+  "/(app)/projects/page": "app/(app)/projects/page.js",
+  "/(app)/setup/page": "app/(app)/setup/page.js",
+  "/(app)/settings/page": "app/(app)/settings/page.js"
 }
