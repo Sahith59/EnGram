@@ -227,16 +227,27 @@
     });
   }
 
-  // ----- Listener for "Capture now" from popup -----
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg?.type === "CAPTURE_NOW") {
-      tryCapture({ reason: "manual", verbose: true, minPairs: 1 }).then(sendResponse);
-      return true;
-    }
-  });
+  // ----- Listener for "Capture now" / ping from popup -----
+  // Guard against double-injection: only register once per page.
+  if (!window.__engramListenerInstalled) {
+    window.__engramListenerInstalled = true;
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (msg?.type === "PING") {
+        sendResponse({ ok: true, ready: true });
+        return false;
+      }
+      if (msg?.type === "CAPTURE_NOW") {
+        tryCapture({ reason: "manual", verbose: true, minPairs: 1 }).then(sendResponse);
+        return true;
+      }
+    });
+  }
 
   // ----- Boot -----
   function boot() {
+    if (window.__engramBooted) return;
+    window.__engramBooted = true;
+
     watchDom();
     watchUrlChanges();
     watchVisibility();

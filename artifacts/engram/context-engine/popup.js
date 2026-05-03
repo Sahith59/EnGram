@@ -69,19 +69,49 @@ document.getElementById("ask-btn").addEventListener("click", async () => {
   chrome.tabs.create({ url: `${url}/ask` });
 });
 
+async function ensureContentScript(tabId) {
+  // Try a no-op ping; if no listener responds, inject the content script.
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "PING" });
+    return true;
+  } catch {
+    try {
+      await chrome.scripting.insertCSS({
+        target: { tabId },
+        files: ["content.css"],
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content.js"],
+      });
+      // Give it a moment to register listeners
+      await new Promise((r) => setTimeout(r, 300));
+      return true;
+    } catch (e) {
+      console.warn("[engram] inject failed", e);
+      return false;
+    }
+  }
+}
+
 captureBtn.addEventListener("click", async () => {
   captureBtn.disabled = true;
   captureBtn.textContent = "Capturing…";
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   try {
-    const result = await chrome.tabs.sendMessage(tab.id, { type: "CAPTURE_NOW" });
-    if (result?.ok) {
-      showToast(`Saved: ${result.data?.title ?? "snapshot"}`, "ok");
+    const ready = await ensureContentScript(tab.id);
+    if (!ready) {
+      showToast("Could not inject capture agent on this page.", "err");
     } else {
-      showToast(result?.error ?? "Capture failed", "err");
+      const result = await chrome.tabs.sendMessage(tab.id, { type: "CAPTURE_NOW" });
+      if (result?.ok) {
+        showToast(`Saved: ${result.data?.title ?? "snapshot"}`, "ok");
+      } else {
+        showToast(result?.error ?? "Capture failed", "err");
+      }
     }
   } catch (err) {
-    showToast(`Page not ready — reload and retry. (${err.message})`, "err");
+    showToast(`Capture failed — ${err.message}`, "err");
   }
   await refreshTabContext();
 });
