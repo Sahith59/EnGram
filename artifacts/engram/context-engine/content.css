@@ -1,7 +1,8 @@
 /* ============================================================
-   ENGRAM — Content script styles (toasts, banners)
+   ENGRAM — Content script styles (toasts + inline save buttons)
    ============================================================ */
 
+/* ---- Toast container ---- */
 #engram-toast-container {
   position: fixed;
   bottom: 24px;
@@ -27,11 +28,8 @@
   opacity: 0;
   transition: transform 220ms ease, opacity 220ms ease;
 }
-.engram-toast.engram-toast-in {
-  transform: translateX(0);
-  opacity: 1;
-}
-.engram-toast-ok { border-left: 3px solid #22c55e; }
+.engram-toast.engram-toast-in { transform: translateX(0); opacity: 1; }
+.engram-toast-ok  { border-left: 3px solid #22c55e; }
 .engram-toast-err { border-left: 3px solid #f87171; }
 
 .engram-toast-head {
@@ -74,4 +72,212 @@
   font-size: 12px;
   color: #8b949e;
   line-height: 1.45;
+}
+
+/* ============================================================
+   ENGRAM — Inline Save Button  (Option C per-response routing)
+   ============================================================ */
+
+/*
+ * .engram-msg-hoverable  — added to each AI response container
+ * .engram-save-wrap      — the button + dropdown bundle
+ * .engram-save-btn       — the visible pill trigger
+ * .engram-dropdown       — the routing panel
+ */
+
+/* Wrap: invisible until the parent is hovered or dropdown is open */
+.engram-save-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-top: 10px;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+  /* Isolate stacking context so the dropdown clears the page UI */
+  isolation: isolate;
+}
+
+.engram-msg-hoverable:hover .engram-save-wrap,
+.engram-save-wrap.engram-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ---- Trigger pill ---- */
+.engram-save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px 5px 9px;
+  background: rgba(124, 58, 237, 0.09);
+  border: 1px solid rgba(124, 58, 237, 0.28);
+  border-radius: 20px;
+  color: #7c3aed;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  user-select: none;
+  outline: none;
+  transition: background 0.15s ease, border-color 0.15s ease,
+              box-shadow 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.engram-save-btn:hover {
+  background: rgba(124, 58, 237, 0.17);
+  border-color: rgba(124, 58, 237, 0.5);
+  box-shadow: 0 2px 10px rgba(124, 58, 237, 0.2);
+}
+.engram-save-btn:active { transform: scale(0.965); }
+
+/* States */
+.engram-save-btn.engram-btn-saving {
+  color: #9ca3af;
+  background: rgba(156, 163, 175, 0.08);
+  border-color: rgba(156, 163, 175, 0.2);
+  cursor: default;
+  pointer-events: none;
+}
+.engram-save-btn.engram-btn-saved {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #16a34a;
+  cursor: default;
+}
+.engram-save-btn.engram-btn-error {
+  background: rgba(248, 113, 113, 0.09);
+  border-color: rgba(248, 113, 113, 0.3);
+  color: #dc2626;
+  cursor: default;
+}
+
+/* Caret rotates when open */
+.engram-btn-caret {
+  font-size: 9px;
+  opacity: 0.6;
+  transition: transform 0.15s ease;
+}
+.engram-save-btn[aria-expanded="true"] .engram-btn-caret {
+  transform: rotate(180deg);
+}
+
+/* ---- Dropdown panel ---- */
+.engram-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 220px;
+  background: #0f0e1a;
+  border: 1px solid rgba(124, 58, 237, 0.3);
+  border-radius: 12px;
+  box-shadow:
+    0 24px 56px rgba(0, 0, 0, 0.6),
+    0 4px 16px rgba(124, 58, 237, 0.14),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  z-index: 2147483646;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(8px) scale(0.95);
+  transform-origin: bottom left;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.engram-dropdown.engram-dropdown-open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+/* Header */
+.engram-dropdown-header {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 11px 14px 9px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.engram-dropdown-logo {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: #a78bfa;
+  font-weight: 700;
+}
+.engram-dropdown-subtitle {
+  font-size: 10px;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: rgba(255, 255, 255, 0.28);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 500;
+}
+
+/* Section label (e.g. "TEAM") */
+.engram-dropdown-section {
+  padding: 8px 14px 3px;
+  font-size: 9px;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.22);
+}
+
+.engram-dropdown-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 3px 0;
+}
+
+/* Each destination row */
+.engram-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  font-size: 13px;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+  border: none;
+  width: 100%;
+  background: none;
+  text-align: left;
+  line-height: 1.3;
+}
+.engram-dropdown-item:hover  { background: rgba(124, 58, 237, 0.18); color: #fff; }
+.engram-dropdown-item:active { background: rgba(124, 58, 237, 0.28); }
+
+.engram-item-icon  { font-size: 14px; flex-shrink: 0; width: 20px; text-align: center; }
+.engram-item-label { flex: 1; font-weight: 500; }
+
+/* Scope badge */
+.engram-item-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+.engram-badge-personal { background: rgba(99, 102, 241, 0.2);  color: #818cf8; }
+.engram-badge-team     { background: rgba(124, 58, 237, 0.22); color: #a78bfa; }
+.engram-badge-owner    { background: rgba(245, 158, 11, 0.2);  color: #fbbf24; }
+
+/* Saving spinner */
+@keyframes engram-spin { to { transform: rotate(360deg); } }
+.engram-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: engram-spin 0.65s linear infinite;
+  flex-shrink: 0;
 }

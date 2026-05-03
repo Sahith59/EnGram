@@ -213,6 +213,27 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     drainQueue().then(() => sendResponse({ ok: true }));
     return true;
   }
+  // Fetch the user's teams so the inline save-button dropdown can be populated
+  // from the content script (which can't make cross-origin requests directly).
+  if (msg?.type === "GET_TEAMS") {
+    getApiUrl().then(async (api) => {
+      try {
+        const res = await fetch(`${api}/api/teams`, { credentials: "include" });
+        if (!res.ok) { sendResponse({ ok: false, teams: [] }); return; }
+        const data = await res.json();
+        sendResponse({ ok: true, teams: data.teams ?? [] });
+      } catch {
+        sendResponse({ ok: false, teams: [] });
+      }
+    });
+    return true;
+  }
+  // Single-pair capture: user routed one specific AI response to a destination.
+  // Payload: { pairs, tool, url, mode, teamId }
+  if (msg?.type === "CAPTURE_PAIR") {
+    capture(msg.payload).then(sendResponse);
+    return true;
+  }
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
