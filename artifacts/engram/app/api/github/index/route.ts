@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
-import { getGithubToken, indexRepo } from "@/lib/github";
+import { getGithubToken, indexRepo, indexCommits } from "@/lib/github";
 
 /**
  * POST /api/github/index
@@ -73,13 +73,26 @@ export async function POST(request: NextRequest) {
 
   // Run indexing (synchronous — will take a while for large repos)
   try {
-    const { fileCount, chunkCount } = await indexRepo({
-      repoId: repoRow.id,
-      teamId: profile.team_id,
-      repoFullName,
-      defaultBranch,
-      token,
-    });
+    // Index file contents + commit history in parallel
+    const [{ fileCount, chunkCount }, commitChunks] = await Promise.all([
+      indexRepo({
+        repoId: repoRow.id,
+        teamId: profile.team_id,
+        repoFullName,
+        defaultBranch,
+        token,
+      }),
+      indexCommits({
+        repoId: repoRow.id,
+        teamId: profile.team_id,
+        repoFullName,
+        defaultBranch,
+        token,
+        maxCommits: 200,
+      }),
+    ]);
+
+    const totalChunks = chunkCount + commitChunks;
 
     // Mark as indexed
     await admin
@@ -87,7 +100,7 @@ export async function POST(request: NextRequest) {
       .update({
         status: "indexed",
         file_count: fileCount,
-        chunk_count: chunkCount,
+        chunk_count: totalChunks,
         indexed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -97,7 +110,8 @@ export async function POST(request: NextRequest) {
       ok: true,
       repoId: repoRow.id,
       fileCount,
-      chunkCount,
+      chunkCount: totalChunks,
+      commitChunks,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -161,6 +161,9 @@ export async function POST(request: NextRequest) {
       similarity: r.similarity,
     }));
   }
+  // Detect "recent/latest" commit intent to lower threshold + prioritise date
+  const isCommitQuery = /\b(commit|commits|push|pushed|history|log|recent|latest|newest|last commit|changelog)\b/i.test(question);
+
   // ----- GitHub chunk search (parallel with semantic recall) -----
   async function githubChunkSearch(): Promise<GithubChunkHit[]> {
     if (!queryEmbedding) return [];
@@ -170,8 +173,8 @@ export async function POST(request: NextRequest) {
         query_embedding: queryEmbedding,
         team_id_filter: profile!.team_id,
         repo_id_filter: null,
-        match_count: 5,
-        match_threshold: 0.5,
+        match_count: isCommitQuery ? 10 : 6,
+        match_threshold: isCommitQuery ? 0.25 : 0.45,
       });
       if (error) {
         // Table may not exist yet (migration not applied)
@@ -400,16 +403,37 @@ Rationale: ${s.rationale ? s.rationale.slice(0, 400) : "N/A"}`;
     })
     .join("\n\n---\n\n");
 
+  // For commit queries: sort commit-type chunks by date (most recent first),
+  // then interleave with code chunks so Claude sees the freshest commit first.
+  let orderedGithubHits = [...githubHits];
+  if (isCommitQuery) {
+    const commitHits = orderedGithubHits.filter(h => h.language === "commit");
+    const codeHits   = orderedGithubHits.filter(h => h.language !== "commit");
+    // Commits are stored with "Date: YYYY-MM-DD" — extract & sort descending
+    commitHits.sort((a, b) => {
+      const dateA = a.content.match(/Date:\s*(\d{4}-\d{2}-\d{2})/)?.[1] ?? "";
+      const dateB = b.content.match(/Date:\s*(\d{4}-\d{2}-\d{2})/)?.[1] ?? "";
+      return dateB.localeCompare(dateA);
+    });
+    orderedGithubHits = [...commitHits, ...codeHits];
+  }
+
   // Build GitHub chunk context block (separate section, labelled GH1, GH2...)
   const githubBlock =
-    githubHits.length > 0
-      ? "\n\n## GitHub Repository Code\n\n" +
-        githubHits
-          .slice(0, 3)
-          .map(
-            (g, i) =>
-              `[GH${i + 1}] **${g.repo_full_name ?? "repo"}** — \`${g.file_path}\`\n\`\`\`${g.language ?? ""}\n${g.content.slice(0, 800)}\n\`\`\``
-          )
+    orderedGithubHits.length > 0
+      ? "\n\n## GitHub Repository Data\n\n" +
+        orderedGithubHits
+          .slice(0, isCommitQuery ? 8 : 4)
+          .map((g, i) => {
+            const isCommit = g.language === "commit";
+            const header = isCommit
+              ? `[GH${i + 1}] **${g.repo_full_name ?? "repo"}** — Commit History`
+              : `[GH${i + 1}] **${g.repo_full_name ?? "repo"}** — \`${g.file_path}\``;
+            const body = isCommit
+              ? g.content.slice(0, 600)
+              : `\`\`\`${g.language ?? ""}\n${g.content.slice(0, 700)}\n\`\`\``;
+            return `${header}\n${body}`;
+          })
           .join("\n\n---\n\n")
       : "";
 
@@ -432,10 +456,11 @@ Question: ${question}
 ${hasSnapshots ? `\n## Captured AI Conversations\n\n${contextBlock}` : ""}${githubBlock}
 
 Strict rules:
-- Use a context ONLY if its content directly addresses the question. If it merely mentions a related word but is about a different topic, DO NOT cite it.
+- Use a context ONLY if its content directly addresses the question.
 - For captured conversations, cite with [1], [2], etc.
-- For GitHub code, cite with [GH1], [GH2], etc.
+- For GitHub code or commits, cite with [GH1], [GH2], etc.
 - DO NOT cite a context just to pad the answer. Better to cite one source well than four loosely.
+- For commit/history questions: the GitHub commit data above IS the authoritative source — answer directly from it with sha, author, date, and message. Do not say you lack real-time access.
 - If NONE of the contexts answer the question, respond exactly with: "I don't have a captured conversation that answers this. Try rephrasing, or capture a chat on this topic."
 - Be concise (2-4 paragraphs max). No filler.
 - End with a single line: CONFIDENCE: [0.0-1.0]`,

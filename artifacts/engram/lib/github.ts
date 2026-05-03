@@ -185,6 +185,156 @@ function detectLang(path: string): string {
   return EXT_TO_LANG[extOf(path)] ?? "text";
 }
 
+// ── Contributor types ─────────────────────────────────────────────────────────
+
+export interface GithubContributor {
+  login: string;
+  avatar_url: string;
+  html_url: string;
+  contributions: number;
+}
+
+export interface GithubCommit {
+  sha: string;
+  commit: {
+    message: string;
+    author: { name: string; email: string; date: string };
+  };
+  author: { login: string; avatar_url: string } | null;
+}
+
+// ── Repo contributors ─────────────────────────────────────────────────────────
+
+export async function getRepoContributors(
+  token: string,
+  repoFullName: string
+): Promise<GithubContributor[]> {
+  const [owner, repo] = repoFullName.split("/");
+  try {
+    const data = await ghFetch<GithubContributor[]>(
+      `/repos/${owner}/${repo}/contributors?per_page=50`,
+      token
+    );
+    return data.filter((c) => c.login && !c.login.includes("[bot]"));
+  } catch {
+    return [];
+  }
+}
+
+// ── Commit indexing ───────────────────────────────────────────────────────────
+
+function relativeDate(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const days = Math.floor(diff / 86_400_000);
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  if (days < 30) return `${Math.floor(days / 7)} weeks ago`;
+  if (days < 365) return `${Math.floor(days / 30)} months ago`;
+  return `${Math.floor(days / 365)} years ago`;
+}
+
+export async function indexCommits(opts: {
+  repoId: string;
+  teamId: string;
+  repoFullName: string;
+  defaultBranch: string;
+  token: string;
+  maxCommits?: number;
+}): Promise<number> {
+  const { repoId, teamId, repoFullName, defaultBranch, token, maxCommits = 200 } = opts;
+  const [owner, repo] = repoFullName.split("/");
+  const admin = createAdminClient();
+
+  // Fetch up to maxCommits across pages
+  const commits: GithubCommit[] = [];
+  let page = 1;
+  while (commits.length < maxCommits) {
+    try {
+      const batch = await ghFetch<GithubCommit[]>(
+        `/repos/${owner}/${repo}/commits?sha=${defaultBranch}&per_page=100&page=${page}`,
+        token
+      );
+      if (!batch.length) break;
+      commits.push(...batch);
+      if (batch.length < 100 || commits.length >= maxCommits) break;
+      page++;
+    } catch {
+      break;
+    }
+  }
+
+  if (!commits.length) return 0;
+
+  // Delete old commit chunks for this repo
+  await admin.from("github_chunks").delete()
+    .eq("repo_id", repoId)
+    .eq("language", "commit");
+
+  // Build commit chunk rows (group up to 5 commits per embedding for efficiency)
+  const BATCH = 5;
+  let totalChunks = 0;
+
+  for (let i = 0; i < commits.length; i += BATCH) {
+    const group = commits.slice(i, i + BATCH);
+
+    // One chunk per individual commit for granular retrieval
+    const rows: {
+      repo_id: string;
+      team_id: string;
+      file_path: string;
+      language: string;
+      chunk_index: number;
+      content: string;
+      embedding: unknown;
+      token_est: number;
+    }[] = [];
+
+    await Promise.all(
+      group.map(async (c, j) => {
+        const short = c.sha.slice(0, 8);
+        const { name, email, date } = c.commit.author;
+        const msg = c.commit.message.trim();
+        const [subject, ...body] = msg.split("\n");
+
+        const text = [
+          `COMMIT: ${short}`,
+          `Repository: ${repoFullName}`,
+          `Author: ${name} <${email}>`,
+          `Date: ${new Date(date).toISOString().slice(0, 10)} (${relativeDate(date)})`,
+          `Message: ${subject}`,
+          body.filter(Boolean).length ? `\nDetails:\n${body.filter(Boolean).join("\n").slice(0, 600)}` : "",
+        ].filter(Boolean).join("\n");
+
+        try {
+          const result = await embedText(text);
+          if (result) {
+            rows.push({
+              repo_id: repoId,
+              team_id: teamId,
+              file_path: `commits/${short}`,
+              language: "commit",
+              chunk_index: i + j,
+              content: text,
+              embedding: result.vector as unknown as string,
+              token_est: Math.ceil(text.length / 4),
+            });
+          }
+        } catch {
+          /* skip */
+        }
+      })
+    );
+
+    if (rows.length) {
+      await admin.from("github_chunks").insert(rows);
+      totalChunks += rows.length;
+    }
+  }
+
+  return totalChunks;
+}
+
 // ── Main indexing function ────────────────────────────────────────────────────
 
 export async function indexRepo(opts: {

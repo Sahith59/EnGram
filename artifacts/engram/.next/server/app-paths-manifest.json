@@ -1,9 +1,5 @@
 {
+  "/page": "app/page.js",
   "/api/capture/route": "app/api/capture/route.js",
-  "/api/github/connect/route": "app/api/github/connect/route.js",
-  "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
-  "/(app)/projects/page": "app/(app)/projects/page.js",
-  "/(app)/settings/extension/page": "app/(app)/settings/extension/page.js",
-  "/(app)/settings/github/page": "app/(app)/settings/github/page.js",
-  "/(app)/settings/page": "app/(app)/settings/page.js"
+  "/(app)/settings/github/page": "app/(app)/settings/github/page.js"
 }
