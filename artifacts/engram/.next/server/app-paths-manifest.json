@@ -1,10 +1,6 @@
 {
+  "/api/me/route": "app/api/me/route.js",
   "/api/capture/route": "app/api/capture/route.js",
-  "/api/team/switch/route": "app/api/team/switch/route.js",
-  "/api/team/invite/route": "app/api/team/invite/route.js",
-  "/api/teams/route": "app/api/teams/route.js",
-  "/api/team/join/route": "app/api/team/join/route.js",
-  "/api/team/leave/route": "app/api/team/leave/route.js",
   "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
   "/(app)/team/page": "app/(app)/team/page.js",
   "/(app)/digest/page": "app/(app)/digest/page.js",
