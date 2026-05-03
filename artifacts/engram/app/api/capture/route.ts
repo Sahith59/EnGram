@@ -90,6 +90,28 @@ export async function POST(request: NextRequest) {
   // ----- Resolve team_id (auto-create personal workspace if missing) -----
   const admin = createAdminClient();
   let resolvedTeamId = teamId;
+
+  // SECURITY: never trust a client-supplied teamId blindly. The capture
+  // endpoint uses the admin client (which bypasses RLS) for INSERT, so a
+  // crafted body could otherwise write into any team. Verify membership.
+  if (resolvedTeamId) {
+    const { data: membership } = await admin
+      .from("team_members")
+      .select("team_id")
+      .eq("team_id", resolvedTeamId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (!membership) {
+      return withCors(
+        NextResponse.json(
+          { error: "Not a member of the requested team" },
+          { status: 403 }
+        ),
+        request
+      );
+    }
+  }
+
   if (!resolvedTeamId) {
     resolvedTeamId =
       (await ensureUserTeam({

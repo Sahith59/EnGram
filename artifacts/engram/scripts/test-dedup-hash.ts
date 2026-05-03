@@ -9,7 +9,7 @@ import { hashConversation, hashConversationIdentity } from "../lib/hash";
 
 let passed = 0;
 let failed = 0;
-function assert(cond, label, extra = "") {
+function assert(cond: boolean, label: string, extra = "") {
   if (cond) {
     console.log(`  ✅ ${label}`);
     passed++;

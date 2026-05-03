@@ -96,6 +96,16 @@ async function capture(payload) {
     };
   }
 
+  // For TEAM captures, prefer the team the user explicitly picked in the
+  // popup. Falls back to their currently-active team only if nothing was
+  // chosen (single-team users, or older clients). Personal captures don't
+  // need a teamId — the server resolves it to the personal workspace.
+  let resolvedTeamId = ident.team_id;
+  if (payload.mode === "team") {
+    const { engram_team_id } = await chrome.storage.local.get("engram_team_id");
+    if (engram_team_id) resolvedTeamId = engram_team_id;
+  }
+
   try {
     const res = await fetch(`${api}/api/capture`, {
       method: "POST",
@@ -106,7 +116,7 @@ async function capture(payload) {
         tool: payload.tool,
         url: payload.url,
         userId: ident.user.id,
-        teamId: ident.team_id,
+        teamId: resolvedTeamId,
         mode: payload.mode === "team" ? "team" : "personal",
       }),
     });
@@ -191,7 +201,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "SET_API_URL") {
     chrome.storage.local
       .set({ engram_api_url: (msg.url || "").trim().replace(/\/$/, "") })
-      .then(() => chrome.storage.local.remove("engram_identity"))
+      // Clear identity AND any cached team_id — the new backend will have
+      // different team UUIDs, so an old selection would always 403.
+      .then(() =>
+        chrome.storage.local.remove(["engram_identity", "engram_team_id"])
+      )
       .then(() => sendResponse({ ok: true }));
     return true;
   }

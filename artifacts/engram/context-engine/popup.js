@@ -40,6 +40,8 @@ async function refreshIdentity() {
   if (ident?.connected) {
     const label = ident.user.full_name || ident.user.email || "Connected";
     setStatus("ok", `Connected · <span class="muted">${label}</span>`);
+    // Refresh team list whenever identity changes — picker needs it.
+    await refreshTeams(apiUrl, ident);
   } else {
     setStatus(
       "warn",
@@ -47,6 +49,100 @@ async function refreshIdentity() {
     );
   }
 }
+
+// ----- Team picker (only relevant when mode === "team") -----
+let knownTeams = [];
+
+async function refreshTeams(apiUrl, ident) {
+  try {
+    const res = await fetch(`${apiUrl}/api/teams`, { credentials: "include" });
+    if (!res.ok) {
+      knownTeams = [];
+      return;
+    }
+    const data = await res.json();
+    // Only shareable teams (skip the user's personal one — "Team mode" is
+    // about sharing, and personal mode handles personal captures).
+    knownTeams = (data?.teams ?? []).filter((t) => !t.isPersonal);
+
+    // If the user has only one shareable team and no selection yet, default
+    // to it. If they have a stale selection (left that team), clear it.
+    const { engram_team_id } = await chrome.storage.local.get("engram_team_id");
+    const stillMember = engram_team_id && knownTeams.some((t) => t.id === engram_team_id);
+    if (!stillMember) {
+      const fallback = knownTeams[0]?.id ?? ident?.team_id ?? null;
+      if (fallback) {
+        await chrome.storage.local.set({ engram_team_id: fallback });
+      } else {
+        await chrome.storage.local.remove("engram_team_id");
+      }
+    }
+  } catch {
+    knownTeams = [];
+  }
+  await paintTeamPicker();
+}
+
+const teamPickerField = document.getElementById("team-picker-field");
+const teamPicker = document.getElementById("team-picker");
+const teamPickerHint = document.getElementById("team-picker-hint");
+
+async function paintTeamPicker() {
+  // Only render the dropdown when the user is in TEAM mode AND belongs to
+  // at least one shareable team. Single-team users see a static label so
+  // they understand which team will receive the capture.
+  const { engram_capture_mode, engram_team_id } = await chrome.storage.local.get([
+    "engram_capture_mode",
+    "engram_team_id",
+  ]);
+  const mode = engram_capture_mode === "team" ? "team" : "personal";
+
+  if (mode !== "team" || knownTeams.length === 0) {
+    teamPickerField.style.display = "none";
+    return;
+  }
+
+  teamPickerField.style.display = "block";
+
+  // Multiple teams → real <select>. Single team → just show its name.
+  if (knownTeams.length === 1) {
+    teamPicker.innerHTML = `<option value="${knownTeams[0].id}">${escapeHtml(
+      knownTeams[0].name
+    )}</option>`;
+    teamPicker.disabled = true;
+    teamPickerHint.textContent = "Captures shared with this team.";
+  } else {
+    teamPicker.disabled = false;
+    teamPicker.innerHTML = knownTeams
+      .map(
+        (t) =>
+          `<option value="${t.id}"${
+            t.id === engram_team_id ? " selected" : ""
+          }>${escapeHtml(t.name)}${t.role !== "member" ? ` (${t.role})` : ""}</option>`
+      )
+      .join("");
+    teamPickerHint.textContent =
+      "Pick which team should receive this capture. Change anytime.";
+  }
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[c]));
+}
+
+teamPicker.addEventListener("change", async () => {
+  const next = teamPicker.value;
+  if (!next) return;
+  await chrome.storage.local.set({ engram_team_id: next });
+  const team = knownTeams.find((t) => t.id === next);
+  if (team) showToast(`Team mode → ${team.name}`, "ok");
+});
 
 async function refreshTabContext() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -158,12 +254,20 @@ modeButtons.forEach((btn) => {
     const next = btn.dataset.mode === "team" ? "team" : "personal";
     await chrome.storage.local.set({ engram_capture_mode: next });
     paintModeButtons(next);
-    showToast(
-      next === "team"
-        ? "Team mode — briefs will be shared with your team."
-        : "Personal mode — captures stay private to you.",
-      "ok"
-    );
+    await paintTeamPicker();
+    if (next === "team" && knownTeams.length === 0) {
+      showToast(
+        "You're not in any shared team yet. Create one in the dashboard.",
+        "err"
+      );
+    } else {
+      showToast(
+        next === "team"
+          ? "Team mode — briefs will be shared with your team."
+          : "Personal mode — captures stay private to you.",
+        "ok"
+      );
+    }
   });
 });
 
