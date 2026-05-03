@@ -6,6 +6,7 @@ import { corsOptions, withCors } from "@/lib/cors";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { ensureUserTeam } from "@/lib/team";
 import { hashConversation, hashConversationIdentity } from "@/lib/hash";
+import { buildSnapshotEmbeddingInput, embedText } from "@/lib/embeddings";
 
 export function OPTIONS(request: NextRequest) {
   return corsOptions(request);
@@ -345,12 +346,35 @@ Call the save_handoff_brief tool with the structured result.`,
       "anonymous";
   }
 
+  // ----- Generate embedding (Phase 6) -----
+  // Best-effort: if OPENAI_API_KEY is unset or the API fails, we still
+  // persist the snapshot — embedding stays NULL and Ask falls back to
+  // keyword retrieval for that row until backfill runs.
+  let embeddingVec: number[] | null = null;
+  try {
+    const embedInput = buildSnapshotEmbeddingInput({
+      title: extraction.title,
+      summary: extraction.summary,
+      decision: extraction.key_decisions,
+      tags: extraction.technologies,
+      rationale: extraction.context_md,
+    });
+    const r = await embedText(embedInput);
+    embeddingVec = r?.vector ?? null;
+  } catch (e) {
+    console.warn(
+      "[capture] embedding failed (continuing without):",
+      e instanceof Error ? e.message : e
+    );
+  }
+
   const optionalDedupFields = {
     content_hash: contentHash,
     identity_hash: identityHash,
     source_url: url ?? null,
     visibility,
     author_handle: authorHandle,
+    ...(embeddingVec ? { embedding: embeddingVec } : {}),
   };
 
   /**

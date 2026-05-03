@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { anthropic } from "@/lib/anthropic";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
+import { embedText } from "@/lib/embeddings";
 
 /**
  * POST /api/ask
@@ -108,6 +110,48 @@ export async function POST(request: NextRequest) {
       ? `title.ilike.%${safeFallback}%,summary.ilike.%${safeFallback}%,decision.ilike.%${safeFallback}%,rationale.ilike.%${safeFallback}%`
       : "title.ilike.%%";
 
+  // ----- Phase 6: semantic recall via pgvector -----
+  // Embed the question once; reuse for every scope. If the API key is
+  // missing or the call fails, semanticIds stays empty and we silently
+  // fall back to keyword-only retrieval.
+  let queryEmbedding: number[] | null = null;
+  try {
+    const r = await embedText(question);
+    queryEmbedding = r?.vector ?? null;
+  } catch (e) {
+    console.warn(
+      "[ask] query embedding failed (degrading to keyword only):",
+      e instanceof Error ? e.message : e
+    );
+  }
+
+  type SemanticHit = { id: string; similarity: number };
+  async function semanticRecall(): Promise<SemanticHit[]> {
+    if (!queryEmbedding) return [];
+    // search_snapshots filters by team_id only; we'll re-filter by
+    // created_by/visibility in JS to honor scope. Use the admin client to
+    // bypass RLS for the RPC (we trust the team_id_filter we just looked
+    // up from the auth'd user's profile).
+    const admin = createAdminClient();
+    const { data, error } = await admin.rpc("search_snapshots", {
+      query_embedding: queryEmbedding,
+      team_id_filter: profile!.team_id,
+      match_count: 20,
+      match_threshold: 0.25,
+    });
+    if (error) {
+      console.warn("[ask] semantic recall failed:", error.message);
+      return [];
+    }
+    return (data ?? []).map((r: { id: string; similarity: number }) => ({
+      id: r.id,
+      similarity: r.similarity,
+    }));
+  }
+  const semanticHits = await semanticRecall();
+  const semanticIds = new Set(semanticHits.map((h) => h.id));
+  const similarityById = new Map(semanticHits.map((h) => [h.id, h.similarity]));
+
   // Run one (or two) scope-bounded queries and union the results.
   type SourceRow = {
     id: string;
@@ -164,29 +208,79 @@ export async function POST(request: NextRequest) {
     return (data ?? []) as SourceRow[];
   }
 
-  let results: SourceRow[] = [];
+  // Keyword recall (existing path)
+  let keywordResults: SourceRow[] = [];
   if (scope === "all") {
     const [personal, team] = await Promise.all([
       fetchScoped("personal"),
       fetchScoped("team"),
     ]);
-    // De-dup by id, keep the first occurrence
     const seen = new Set<string>();
-    results = [...personal, ...team]
-      .filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)))
-      .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))
-      .slice(0, 12);
+    keywordResults = [...personal, ...team].filter((r) =>
+      seen.has(r.id) ? false : (seen.add(r.id), true)
+    );
   } else {
-    results = await fetchScoped(scope);
+    keywordResults = await fetchScoped(scope);
   }
+
+  // ----- Hybrid: union keyword recall with semantic recall -----
+  // Pull semantic-hit rows the keyword recall missed, applying the same
+  // scope filter (created_by/visibility) so we never leak across scope.
+  const knownIds = new Set(keywordResults.map((r) => r.id));
+  const missingSemanticIds = [...semanticIds].filter((id) => !knownIds.has(id));
+  let semanticRows: SourceRow[] = [];
+  if (missingSemanticIds.length > 0) {
+    let q = supabase
+      .from("context_snapshots")
+      .select(
+        "id, title, summary, decision, rationale, ai_tool, tags, created_at, visibility, author_handle, created_by"
+      )
+      .in("id", missingSemanticIds);
+    const { data, error } = await q;
+    if (error && /visibility|author_handle/i.test(error.message ?? "")) {
+      const legacy = await supabase
+        .from("context_snapshots")
+        .select(
+          "id, title, summary, decision, rationale, ai_tool, tags, created_at, created_by"
+        )
+        .in("id", missingSemanticIds);
+      semanticRows = (legacy.data ?? []) as SourceRow[];
+    } else if (!error) {
+      semanticRows = (data ?? []) as SourceRow[];
+    }
+    // Apply scope filter in app (the RPC was team-only).
+    semanticRows = semanticRows.filter((r) => {
+      if (scope === "personal") {
+        return (
+          r.created_by === user!.id &&
+          (r.visibility === undefined ||
+            r.visibility === null ||
+            r.visibility === "personal")
+        );
+      }
+      if (scope === "team") {
+        return r.visibility === "team";
+      }
+      // 'all'
+      return (
+        r.created_by === user!.id || r.visibility === "team"
+      );
+    });
+  }
+
+  const allCandidates = [...keywordResults, ...semanticRows];
+  const dedup = new Set<string>();
+  let results = allCandidates.filter((r) =>
+    dedup.has(r.id) ? false : (dedup.add(r.id), true)
+  );
 
   // ----- Relevance scoring -----
   // The OR-match is intentionally loose for recall, but we don't want every
   // loosely-matching row to show up as a "source". Score each candidate by
   // how many distinct meaningful tokens appear anywhere in its searchable
   // text, then keep only the strong ones.
-  function scoreRow(r: SourceRow): number {
-    if (tokens.length === 0) return 1;
+  function keywordScore(r: SourceRow): number {
+    if (tokens.length === 0) return 0;
     const hay = [
       r.title ?? "",
       r.summary ?? "",
@@ -202,15 +296,22 @@ export async function POST(request: NextRequest) {
     }
     return score;
   }
-  // Require a meaningful match: when the question has >=2 meaningful tokens,
-  // demand at least 2 distinct hits OR a single hit on a token longer than
-  // 5 chars (a long, specific word like "recursion" is enough on its own).
-  const minScore = tokens.length >= 2 ? 2 : 1;
+  // Hybrid score: combine keyword hits with semantic similarity.
+  // - Keyword hit on a long/specific token is strong evidence.
+  // - High cosine similarity is independent strong evidence.
+  // - A row needs to clear EITHER bar to qualify.
+  const minKeywordScore = tokens.length >= 2 ? 2 : 1;
+  const SEMANTIC_QUALIFY = 0.45; // strong semantic match alone is enough
   const scored = results
-    .map((r) => ({ row: r, score: scoreRow(r) }))
-    .filter(({ row, score }) => {
-      if (score >= minScore) return true;
-      if (score >= 1 && tokens.some((t) => t.length >= 6 && (
+    .map((r) => {
+      const ks = keywordScore(r);
+      const sim = similarityById.get(r.id) ?? 0;
+      return { row: r, ks, sim };
+    })
+    .filter(({ row, ks, sim }) => {
+      if (sim >= SEMANTIC_QUALIFY) return true;
+      if (ks >= minKeywordScore) return true;
+      if (ks >= 1 && tokens.some((t) => t.length >= 6 && (
         (row.title ?? "").toLowerCase().includes(t) ||
         (row.summary ?? "").toLowerCase().includes(t) ||
         (row.decision ?? "").toLowerCase().includes(t) ||
@@ -218,7 +319,17 @@ export async function POST(request: NextRequest) {
       ))) return true;
       return false;
     })
-    .sort((a, b) => b.score - a.score || +new Date(b.row.created_at) - +new Date(a.row.created_at))
+    .map((x) => ({
+      ...x,
+      // Combined score: weight semantic similarity heavily, treat each
+      // keyword hit as worth ~0.15 cosine. Cap to keep things sane.
+      total: Math.min(1, x.sim + Math.min(0.45, x.ks * 0.15)),
+    }))
+    .sort(
+      (a, b) =>
+        b.total - a.total ||
+        +new Date(b.row.created_at) - +new Date(a.row.created_at)
+    )
     .slice(0, 4);
   const sources = scored.map((s) => s.row);
 

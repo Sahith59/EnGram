@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { Search, User, Users } from "lucide-react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { ContextTimeline } from "@/components/context/ContextTimeline";
+import { EmbeddingsBanner } from "@/components/dashboard/EmbeddingsBanner";
 import { cn } from "@/lib/utils";
 
 export default function DashboardPage() {
@@ -97,6 +98,8 @@ function DashboardInner() {
           className="w-full h-11 pl-10 pr-4 rounded-lg border border-gh-border bg-gh-canvas text-sm text-gh-text placeholder:text-gh-muted/70 outline-none focus:border-engram/50 focus:shadow-[0_0_0_3px_rgba(124,58,237,0.12)] transition-all"
         />
       </motion.div>
+
+      <EmbeddingsBanner />
 
       <ContextTimeline scope={scope} />
     </>
