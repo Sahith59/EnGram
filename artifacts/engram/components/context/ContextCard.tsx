@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Check, ClipboardCopy, ChevronDown, ExternalLink, Sparkles } from "lucide-react";
 import { ToolBadge } from "./ToolBadge";
 import { cn, formatRelativeTime, truncate } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/clipboard";
 import type { AITool } from "@/types";
 
 export interface ContextCardData {
@@ -36,6 +37,8 @@ export function ContextCard({
   const [open, setOpen] = useState(false);
   const [continueState, setContinueState] = useState<"idle" | "preparing" | "ready">("idle");
   const ddRef = useRef<HTMLDivElement>(null);
+  const handoffCache = useRef<Record<string, string>>({});
+  const briefMd = useRef<string | null>(null);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -45,38 +48,90 @@ export function ContextCard({
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  async function copyContextMd(e: React.MouseEvent) {
+  // Prefetch brief once on mount (cheap — just a markdown fetch)
+  useEffect(() => {
+    fetch(`/api/contexts/${ctx.id}/export?mode=brief`)
+      .then((r) => (r.ok ? r.text() : null))
+      .then((txt) => {
+        if (txt) briefMd.current = txt;
+      })
+      .catch(() => {});
+  }, [ctx.id]);
+
+  // Prefetch ALL handoff variants the moment the dropdown opens, so the
+  // click handler can write to clipboard synchronously inside the user gesture.
+  useEffect(() => {
+    if (!open) return;
+    continueTargets.forEach((t) => {
+      if (handoffCache.current[t.tool]) return;
+      fetch(
+        `/api/contexts/${ctx.id}/export?mode=handoff&target=${encodeURIComponent(t.label)}`
+      )
+        .then((r) => (r.ok ? r.text() : null))
+        .then((txt) => {
+          if (txt) handoffCache.current[t.tool] = txt;
+        })
+        .catch(() => {});
+    });
+  }, [open, ctx.id]);
+
+  function copyContextMd(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    try {
-      const res = await fetch(`/api/contexts/${ctx.id}/export?mode=brief`);
-      const text = await res.text();
-      await navigator.clipboard.writeText(text);
+    const text = briefMd.current;
+    if (!text) {
+      // Cache miss — show a hint, refetch, but no instant copy this click
+      fetch(`/api/contexts/${ctx.id}/export?mode=brief`)
+        .then((r) => r.text())
+        .then((t) => {
+          briefMd.current = t;
+        });
+      return;
+    }
+    if (copyToClipboard(text)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
-    } catch {
-      // ignore
     }
   }
 
-  async function handleContinue(e: React.MouseEvent, target: typeof continueTargets[number]) {
+  function handleContinue(e: React.MouseEvent, target: typeof continueTargets[number]) {
     e.preventDefault();
     e.stopPropagation();
-    setContinueState("preparing");
-    try {
-      const res = await fetch(
-        `/api/contexts/${ctx.id}/export?mode=handoff&target=${encodeURIComponent(target.label)}`
-      );
-      const handoffPrompt = await res.text();
-      await navigator.clipboard.writeText(handoffPrompt);
-      setContinueState("ready");
-      // Open the destination tool in a new tab. The user pastes (Cmd/Ctrl+V) on arrival.
-      window.open(target.url, "_blank", "noopener,noreferrer");
-      setTimeout(() => setContinueState("idle"), 4000);
-    } catch (err) {
-      console.error(err);
-      setContinueState("idle");
+    const cached = handoffCache.current[target.tool];
+
+    if (cached) {
+      // Synchronous path — clipboard write inside user gesture, then open tab
+      const ok = copyToClipboard(cached);
+      if (ok) {
+        setContinueState("ready");
+        window.open(target.url, "_blank", "noopener,noreferrer");
+        setTimeout(() => setContinueState("idle"), 4500);
+      } else {
+        setContinueState("idle");
+        alert("Could not copy to clipboard. Please grant clipboard permission and try again.");
+      }
+      setOpen(false);
+      return;
     }
+
+    // Cache miss (rare — fetch should have completed). Fetch, then write, then open.
+    setContinueState("preparing");
+    fetch(
+      `/api/contexts/${ctx.id}/export?mode=handoff&target=${encodeURIComponent(target.label)}`
+    )
+      .then((r) => r.text())
+      .then((handoffPrompt) => {
+        handoffCache.current[target.tool] = handoffPrompt;
+        const ok = copyToClipboard(handoffPrompt);
+        if (ok) {
+          setContinueState("ready");
+          window.open(target.url, "_blank", "noopener,noreferrer");
+          setTimeout(() => setContinueState("idle"), 4500);
+        } else {
+          setContinueState("idle");
+        }
+      })
+      .catch(() => setContinueState("idle"));
     setOpen(false);
   }
 

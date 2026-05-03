@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { ToolBadge } from "@/components/context/ToolBadge";
 import { formatRelativeTime, cn } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/clipboard";
 import type { AITool } from "@/types";
 
 interface ResumeData {
@@ -38,6 +39,8 @@ export default function ResumePage() {
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
   const [filter, setFilter] = useState<string | null>(null);
+  const [handoffPrompt, setHandoffPrompt] = useState<string>("");
+  const [handoffLoading, setHandoffLoading] = useState(false);
 
   function load(tool?: string) {
     setLoading(true);
@@ -52,20 +55,41 @@ export default function ResumePage() {
     load(filter ?? undefined);
   }, [filter]);
 
-  const resumePrompt = data
-    ? `I'm continuing work from a previous AI session. Here's the context:
+  // Pre-fetch the rich handoff brief whenever data changes, so the
+  // "Resume in X" buttons can write to clipboard synchronously on click.
+  useEffect(() => {
+    if (!data) {
+      setHandoffPrompt("");
+      return;
+    }
+    setHandoffLoading(true);
+    fetch(`/api/contexts/${data.id}/export?mode=handoff`)
+      .then((r) => (r.ok ? r.text() : ""))
+      .then((txt) => setHandoffPrompt(txt))
+      .finally(() => setHandoffLoading(false));
+  }, [data]);
 
-**Title:** ${data.title}
-${data.project ? `**Project:** ${data.project}\n` : ""}${data.summary ? `**Summary:** ${data.summary}\n` : ""}${data.decision ? `\n**Decisions made:**\n${data.decision}\n` : ""}${data.tags.length ? `\n**Tech:** ${data.tags.join(", ")}\n` : ""}
+  function copyPrompt() {
+    if (!handoffPrompt) return;
+    if (copyToClipboard(handoffPrompt)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  }
 
-Please pick up from here and continue helping me.`
-    : "";
-
-  async function copyPrompt() {
-    if (!resumePrompt) return;
-    await navigator.clipboard.writeText(resumePrompt);
+  function resumeIn(target: typeof targets[number]) {
+    if (!handoffPrompt) {
+      alert("Brief still loading — please wait a moment and try again.");
+      return;
+    }
+    const ok = copyToClipboard(handoffPrompt);
+    if (!ok) {
+      alert("Could not copy to clipboard. Please grant permission and try again.");
+      return;
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+    window.open(target.url, "_blank", "noopener,noreferrer");
   }
 
   return (
@@ -184,19 +208,20 @@ Please pick up from here and continue helping me.`
                 </button>
               </div>
               <pre className="p-5 text-xs font-mono text-gh-text leading-relaxed whitespace-pre-wrap overflow-x-auto max-h-72">
-                {resumePrompt}
+                {handoffLoading
+                  ? "Preparing handoff brief…"
+                  : handoffPrompt || "No brief available."}
               </pre>
             </div>
 
             <div className="grid sm:grid-cols-3 gap-3">
               {targets.map((t) => (
-                <a
+                <button
                   key={t.id}
-                  href={t.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={copyPrompt}
-                  className="group flex items-center justify-between p-4 rounded-lg border border-gh-border bg-gh-canvas hover:border-engram/40 transition-all"
+                  type="button"
+                  onClick={() => resumeIn(t)}
+                  disabled={handoffLoading || !handoffPrompt}
+                  className="group flex items-center justify-between p-4 rounded-lg border border-gh-border bg-gh-canvas hover:border-engram/40 transition-all text-left disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <span className="flex items-center gap-2.5">
                     <span
@@ -210,11 +235,12 @@ Please pick up from here and continue helping me.`
                     <span className="text-sm text-gh-text">{t.label}</span>
                   </span>
                   <ExternalLink className="h-3.5 w-3.5 text-gh-muted group-hover:text-engram-light transition-colors" />
-                </a>
+                </button>
               ))}
             </div>
             <p className="mt-3 text-[11px] font-mono text-gh-muted text-center">
-              clicking copies the prompt and opens the tool — paste in the new chat
+              we copy the full handoff brief and open the tool — paste with{" "}
+              <kbd className="font-mono">⌘V</kbd> / <kbd className="font-mono">Ctrl+V</kbd>
             </p>
           </>
         )}

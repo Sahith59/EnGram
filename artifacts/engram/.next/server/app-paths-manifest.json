@@ -1,7 +1,7 @@
 {
   "/api/capture/route": "app/api/capture/route.js",
   "/api/contexts/[id]/export/route": "app/api/contexts/[id]/export/route.js",
-  "/api/me/route": "app/api/me/route.js",
+  "/api/resume/route": "app/api/resume/route.js",
   "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
   "/(app)/settings/extension/page": "app/(app)/settings/extension/page.js",
   "/(app)/ask/page": "app/(app)/ask/page.js",
