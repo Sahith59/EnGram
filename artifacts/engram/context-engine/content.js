@@ -283,16 +283,63 @@
   // ================================================================
   // INLINE SAVE BUTTONS — Option C: per-response destination routing
   // ================================================================
-  // Lets users save a specific AI response (+ its preceding prompt)
-  // to Personal or any of their Teams, independently of the global
-  // capture mode. A polished pill button appears on hover next to each
-  // AI response; clicking reveals a destination dropdown.
+  // A polished pill button injected below every AI response on
+  // ChatGPT / Claude / Gemini. Clicking opens a floating dropdown
+  // letting the user route that specific (prompt + response) pair to
+  // Personal or any Team — independently of the global capture mode.
+  //
+  // Architecture notes:
+  //  • Hover visibility uses JS mouseenter/mouseleave (not CSS :hover)
+  //    so it works even when the host page sets pointer-events:none on
+  //    message containers.
+  //  • The dropdown is appended to document.body as position:fixed and
+  //    positioned via getBoundingClientRect() — bypasses any
+  //    overflow:hidden clipping in the host page's layout.
+  //  • Multiple selector fallbacks per platform handle DOM churn.
   // ================================================================
 
-  let cachedTeams = [];     // populated once at boot, refreshed on success
-  let injectTimer = null;   // debounce handle for injection scheduling
+  let cachedTeams = [];   // teams fetched at boot
+  let injectTimer  = null; // debounce handle
 
-  // Fetch teams via background (background can make credentialed fetches)
+  // One global dropdown element lives in document.body.
+  // It gets repositioned and repopulated each time a button is clicked.
+  let engramGlobalDropdown = null;
+  let engramDropdownCleanup = null; // function to call on close
+
+  function ensureGlobalDropdown() {
+    if (engramGlobalDropdown && document.body.contains(engramGlobalDropdown)) {
+      return engramGlobalDropdown;
+    }
+    const d = document.createElement("div");
+    d.id = "engram-global-dropdown";
+    d.className = "engram-dropdown";
+    document.body.appendChild(d);
+    engramGlobalDropdown = d;
+    return d;
+  }
+
+  function closeGlobalDropdown() {
+    if (!engramGlobalDropdown) return;
+    engramGlobalDropdown.classList.remove("engram-dropdown-open");
+    if (typeof engramDropdownCleanup === "function") {
+      engramDropdownCleanup();
+      engramDropdownCleanup = null;
+    }
+  }
+
+  // Close when clicking outside
+  document.addEventListener("click", (e) => {
+    if (
+      engramGlobalDropdown &&
+      engramGlobalDropdown.classList.contains("engram-dropdown-open") &&
+      !engramGlobalDropdown.contains(e.target) &&
+      !e.target.closest(".engram-save-btn")
+    ) {
+      closeGlobalDropdown();
+    }
+  }, true);
+
+  // Fetch teams via background (cross-origin credentialed fetch)
   async function loadTeamsCache() {
     try {
       const resp = await new Promise((resolve) =>
@@ -306,49 +353,74 @@
     }
   }
 
-  // Per-platform DOM config: which elements are AI responses, which are user
-  // prompts, and where to insert the save button.
-  function getPlatformConfig() {
+  // Returns ordered list of {el, role} for all messages in DOM order.
+  // Tries multiple selector strategies per platform.
+  function gatherMessageEls() {
+    const result = [];
+
     if (TOOL === "chatgpt") {
-      return {
-        assistantSel: '[data-message-author-role="assistant"]',
-        userSel:      '[data-message-author-role="user"]',
-        textSel:      '.markdown, .prose',
-        // Insert the button wrap at the end of the message element itself
-        getInsert:    (el) => el,
-        // Hover class goes on the same element (ChatGPT wraps each msg)
-        getHoverTarget: (el) => el,
-      };
+      // ChatGPT uses article[data-message-author-role] — stable since 2023
+      const ASEL = '[data-message-author-role="assistant"]';
+      const USEL = '[data-message-author-role="user"]';
+      document.querySelectorAll(`${ASEL}, ${USEL}`).forEach((el) => {
+        result.push({ el, role: el.matches(ASEL) ? "assistant" : "user" });
+      });
     }
+
     if (TOOL === "claude") {
-      return {
-        assistantSel: '.font-claude-message',
-        userSel:      '.font-user-message',
-        textSel:      null,
-        getInsert:    (el) => el,
-        getHoverTarget: (el) => el.closest("article") || el,
-      };
+      // Primary: data-testid containing "human" or "assistant"
+      document.querySelectorAll("[data-testid^='message']").forEach((el) => {
+        const tid = el.getAttribute("data-testid") || "";
+        if (tid.includes("human"))          result.push({ el, role: "user" });
+        else if (!tid.includes("human"))    result.push({ el, role: "assistant" });
+      });
+      // Fallback: class-based selectors
+      if (result.length === 0) {
+        document.querySelectorAll(".font-claude-message, .font-user-message").forEach((el) => {
+          result.push({
+            el,
+            role: el.classList.contains("font-user-message") ? "user" : "assistant",
+          });
+        });
+      }
     }
+
     if (TOOL === "gemini") {
-      return {
-        assistantSel: 'model-response',
-        userSel:      'user-query',
-        textSel:      '.markdown, .query-text, message-content',
-        getInsert:    (el) => el,
-        getHoverTarget: (el) => el,
-      };
+      // Gemini uses custom elements — very stable
+      document.querySelectorAll("user-query, model-response").forEach((el) => {
+        result.push({
+          el,
+          role: el.tagName.toLowerCase() === "user-query" ? "user" : "assistant",
+        });
+      });
     }
-    return null;
+
+    return result;
   }
 
-  // Extract clean text from an element, preferring a focused child selector
-  function getTextFromEl(el, textSel) {
+  // Clean innerText from any element (fallback chain for text selectors)
+  function getTextFromEl(el) {
     if (!el) return "";
-    const target = textSel ? (el.querySelector(textSel) || el) : el;
-    return stripUiNoise(target.innerText || "");
+    // Try to find the actual prose container; fall back to the whole element
+    const prose =
+      el.querySelector(".markdown") ||
+      el.querySelector(".prose")    ||
+      el.querySelector("message-content") ||
+      el.querySelector(".query-text") ||
+      el;
+    return stripUiNoise(prose.innerText || "");
   }
 
-  // Send a single user+assistant pair to a specific destination
+  // Escape HTML for team names displayed in dropdown markup
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // Send exactly one (user + assistant) pair to the chosen destination
   async function captureSpecificPair(userText, assistantText, mode, teamId) {
     const pairs = [
       { role: "user",      content: userText      },
@@ -358,25 +430,139 @@
       chrome.runtime.sendMessage(
         {
           type: "CAPTURE_PAIR",
-          payload: {
-            pairs,
-            tool: TOOL,
-            url: location.href,
-            mode,
-            teamId: teamId || undefined,
-          },
+          payload: { pairs, tool: TOOL, url: location.href, mode,
+                     teamId: teamId || undefined },
         },
         resolve
       )
     );
   }
 
-  // Build the pill + dropdown element for one AI response
-  function createSaveButton(userText, assistantText) {
+  // Show the global dropdown anchored to the given button element
+  function openDropdownFor(anchorBtn, userText, assistantText, triggerWrap) {
+    const dd = ensureGlobalDropdown();
+
+    // Rebuild dropdown contents for this button's context
+    dd.innerHTML = "";
+
+    // Header
+    const header = document.createElement("div");
+    header.className = "engram-dropdown-header";
+    header.innerHTML =
+      `<span class="engram-dropdown-logo">ENGRAM</span>` +
+      `<span class="engram-dropdown-subtitle">Route this response to…</span>`;
+    dd.appendChild(header);
+
+    // Helper: build a destination row
+    function addDestRow(icon, label, badgeClass, badgeText, onClick) {
+      const row = document.createElement("button");
+      row.className = "engram-dropdown-item";
+      row.innerHTML =
+        `<span class="engram-item-icon">${icon}</span>` +
+        `<span class="engram-item-label">${label}</span>` +
+        `<span class="engram-item-badge ${badgeClass}">${badgeText}</span>`;
+      row.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
+      dd.appendChild(row);
+    }
+
+    // Personal
+    addDestRow("🔒", "Personal", "engram-badge-personal", "private", () =>
+      handleSave("personal", null, "Personal", anchorBtn, triggerWrap, userText, assistantText)
+    );
+
+    // Teams
+    const sharedTeams = cachedTeams.filter((t) => !t.isPersonal);
+    if (sharedTeams.length > 0) {
+      const divider = document.createElement("div");
+      divider.className = "engram-dropdown-divider";
+      dd.appendChild(divider);
+      const sec = document.createElement("div");
+      sec.className = "engram-dropdown-section";
+      sec.textContent = "Teams";
+      dd.appendChild(sec);
+      for (const team of sharedTeams) {
+        const badgeCls   = team.role === "owner" ? "engram-badge-owner" : "engram-badge-team";
+        const badgeLbl   = team.role === "owner" ? "owner" : (team.role || "member");
+        addDestRow("👥", escapeHtml(team.name), badgeCls, badgeLbl, () =>
+          handleSave("team", team.id, team.name, anchorBtn, triggerWrap, userText, assistantText)
+        );
+      }
+    }
+
+    // Position: fixed, above the button
+    const rect = anchorBtn.getBoundingClientRect();
+    dd.style.left   = `${Math.max(8, rect.left)}px`;
+    dd.style.top    = "auto";
+    dd.style.bottom = `${window.innerHeight - rect.top + 6}px`;
+    dd.style.right  = "auto";
+
+    // Flip to below if not enough space above
+    if (rect.top < 200) {
+      dd.style.top    = `${rect.bottom + 6}px`;
+      dd.style.bottom = "auto";
+    }
+
+    requestAnimationFrame(() => dd.classList.add("engram-dropdown-open"));
+
+    // Cleanup: remove open class from wrap on close
+    engramDropdownCleanup = () => {
+      triggerWrap.classList.remove("engram-open");
+      anchorBtn.setAttribute("aria-expanded", "false");
+    };
+  }
+
+  // Handle a destination click: update button state, send, give feedback
+  async function handleSave(mode, teamId, label, btn, wrap, userText, assistantText) {
+    closeGlobalDropdown();
+
+    // Saving state — keep wrap visible
+    wrap.classList.add("engram-open");
+    btn.classList.add("engram-btn-saving");
+    const iconEl  = btn.querySelector(".engram-btn-icon");
+    const labelEl = btn.querySelector(".engram-btn-label");
+    const caretEl = btn.querySelector(".engram-btn-caret");
+    labelEl.textContent = "Saving…";
+    iconEl.innerHTML = `<span class="engram-spinner"></span>`;
+    if (caretEl) caretEl.style.display = "none";
+
+    const resp = await captureSpecificPair(userText, assistantText, mode, teamId);
+    btn.classList.remove("engram-btn-saving");
+
+    if (resp?.ok) {
+      btn.classList.add("engram-btn-saved");
+      iconEl.textContent  = "✓";
+      labelEl.textContent = `Saved to ${label}`;
+      setTimeout(() => {
+        btn.classList.remove("engram-btn-saved");
+        iconEl.textContent  = "⬡";
+        labelEl.textContent = "Save to ENGRAM";
+        if (caretEl) caretEl.style.display = "";
+        wrap.classList.remove("engram-open");
+      }, 3000);
+    } else {
+      btn.classList.add("engram-btn-error");
+      iconEl.textContent  = "✕";
+      labelEl.textContent = resp?.error?.includes("sign in") ? "Sign in first" : "Failed — retry?";
+      if (caretEl) caretEl.style.display = "none";
+      setTimeout(() => {
+        btn.classList.remove("engram-btn-error");
+        iconEl.textContent  = "⬡";
+        labelEl.textContent = "Save to ENGRAM";
+        if (caretEl) caretEl.style.display = "";
+        wrap.classList.remove("engram-open");
+      }, 4000);
+    }
+  }
+
+  // Build and attach the pill button + hover wiring for one assistant element
+  function attachSaveButton(assistantEl, userText, assistantText) {
+    // Mark before touching DOM to prevent double-inject
+    assistantEl.dataset.engramBtn = "1";
+
+    // ---- Button wrap (inline block, hidden by default) ----
     const wrap = document.createElement("div");
     wrap.className = "engram-save-wrap";
 
-    // ---- Trigger button ----
     const btn = document.createElement("button");
     btn.className = "engram-save-btn";
     btn.setAttribute("aria-haspopup", "true");
@@ -385,204 +571,91 @@
       `<span class="engram-btn-icon">⬡</span>` +
       `<span class="engram-btn-label">Save to ENGRAM</span>` +
       `<span class="engram-btn-caret">▾</span>`;
+    wrap.appendChild(btn);
+    assistantEl.appendChild(wrap);
 
-    // ---- Dropdown ----
-    const dropdown = document.createElement("div");
-    dropdown.className = "engram-dropdown";
-
-    // Header
-    const header = document.createElement("div");
-    header.className = "engram-dropdown-header";
-    header.innerHTML =
-      `<span class="engram-dropdown-logo">ENGRAM</span>` +
-      `<span class="engram-dropdown-subtitle">Route this response to…</span>`;
-    dropdown.appendChild(header);
-
-    // Personal option
-    const personalItem = document.createElement("button");
-    personalItem.className = "engram-dropdown-item";
-    personalItem.innerHTML =
-      `<span class="engram-item-icon">🔒</span>` +
-      `<span class="engram-item-label">Personal</span>` +
-      `<span class="engram-item-badge engram-badge-personal">private</span>`;
-    dropdown.appendChild(personalItem);
-
-    // Team options (if any non-personal teams exist)
-    const sharedTeams = cachedTeams.filter((t) => !t.isPersonal);
-    if (sharedTeams.length > 0) {
-      const div = document.createElement("div");
-      div.className = "engram-dropdown-divider";
-      dropdown.appendChild(div);
-      const sec = document.createElement("div");
-      sec.className = "engram-dropdown-section";
-      sec.textContent = "Teams";
-      dropdown.appendChild(sec);
-      for (const team of sharedTeams) {
-        const item = document.createElement("button");
-        item.className = "engram-dropdown-item";
-        const badge = team.role === "owner" ? "engram-badge-owner" : "engram-badge-team";
-        const badgeLabel = team.role === "owner" ? "owner" : team.role || "member";
-        item.innerHTML =
-          `<span class="engram-item-icon">👥</span>` +
-          `<span class="engram-item-label">${escapeHtml(team.name)}</span>` +
-          `<span class="engram-item-badge ${badge}">${badgeLabel}</span>`;
-        item.addEventListener("click", () => handleSave("team", team.id, team.name, btn, dropdown, wrap, userText, assistantText));
-        dropdown.appendChild(item);
-      }
+    // ---- Hover: JS events on the message container ----
+    // We walk up to find a reasonable hover target (avoids pointer-events
+    // issues that break CSS :hover on some platforms).
+    const hoverTarget = assistantEl.closest("article") || assistantEl;
+    if (!hoverTarget.dataset.engramHoverBound) {
+      hoverTarget.dataset.engramHoverBound = "1";
+      hoverTarget.addEventListener("mouseenter", () => {
+        // Show all save-wrap buttons inside this container
+        hoverTarget.querySelectorAll(".engram-save-wrap").forEach((w) => {
+          if (!w.classList.contains("engram-open")) {
+            w.style.opacity = "1";
+            w.style.pointerEvents = "auto";
+          }
+        });
+      });
+      hoverTarget.addEventListener("mouseleave", (e) => {
+        // Hide unless dropdown is open for this wrap
+        if (engramGlobalDropdown?.classList.contains("engram-dropdown-open")) return;
+        hoverTarget.querySelectorAll(".engram-save-wrap").forEach((w) => {
+          if (!w.classList.contains("engram-open")) {
+            w.style.opacity = "0";
+            w.style.pointerEvents = "none";
+          }
+        });
+      });
     }
 
-    personalItem.addEventListener("click", () => handleSave("personal", null, "Personal", btn, dropdown, wrap, userText, assistantText));
-
-    wrap.appendChild(btn);
-    wrap.appendChild(dropdown);
-
-    // Toggle dropdown
+    // ---- Click: open the global dropdown ----
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      const isOpen = dropdown.classList.contains("engram-dropdown-open");
-      closeAllDropdowns();
-      if (!isOpen) {
-        dropdown.classList.add("engram-dropdown-open");
+      const alreadyOpen =
+        engramGlobalDropdown?.classList.contains("engram-dropdown-open") &&
+        wrap.classList.contains("engram-open");
+
+      closeGlobalDropdown();
+
+      if (!alreadyOpen) {
         wrap.classList.add("engram-open");
+        wrap.style.opacity = "1";
+        wrap.style.pointerEvents = "auto";
         btn.setAttribute("aria-expanded", "true");
+        openDropdownFor(btn, userText, assistantText, wrap);
       }
-    });
-
-    // Close on outside click
-    document.addEventListener("click", () => {
-      if (dropdown.classList.contains("engram-dropdown-open")) {
-        dropdown.classList.remove("engram-dropdown-open");
-        wrap.classList.remove("engram-open");
-        btn.setAttribute("aria-expanded", "false");
-      }
-    });
-
-    return wrap;
-  }
-
-  // Close every open dropdown (so only one is open at a time)
-  function closeAllDropdowns() {
-    document.querySelectorAll(".engram-dropdown-open").forEach((d) => {
-      d.classList.remove("engram-dropdown-open");
-    });
-    document.querySelectorAll(".engram-save-btn[aria-expanded='true']").forEach((b) => {
-      b.setAttribute("aria-expanded", "false");
-    });
-    document.querySelectorAll(".engram-save-wrap.engram-open").forEach((w) => {
-      w.classList.remove("engram-open");
     });
   }
 
-  // Handle a destination selection — show states, send, feedback
-  async function handleSave(mode, teamId, label, btn, dropdown, wrap, userText, assistantText) {
-    // Close dropdown immediately
-    dropdown.classList.remove("engram-dropdown-open");
-    wrap.classList.remove("engram-open");
-    btn.setAttribute("aria-expanded", "false");
+  // Main injection pass — scans for undecorated AI responses
+  function injectSaveButtons() {
+    try {
+      const allEls = gatherMessageEls();
+      console.log(`[engram] injectSaveButtons: found ${allEls.length} message elements on ${TOOL}`);
 
-    // Saving state
-    btn.classList.add("engram-btn-saving");
-    btn.querySelector(".engram-btn-label").textContent = "Saving…";
-    btn.querySelector(".engram-btn-icon").innerHTML = `<span class="engram-spinner"></span>`;
-    btn.querySelector(".engram-btn-caret").style.display = "none";
-    wrap.classList.add("engram-open"); // keep visible while saving
+      allEls.forEach(({ el, role }, idx) => {
+        if (role !== "assistant") return;
+        if (el.dataset.engramBtn) return;
 
-    const resp = await captureSpecificPair(userText, assistantText, mode, teamId);
+        // Find nearest preceding user message
+        let userEl = null;
+        for (let i = idx - 1; i >= 0; i--) {
+          if (allEls[i].role === "user") { userEl = allEls[i].el; break; }
+        }
 
-    btn.classList.remove("engram-btn-saving");
+        const assistantText = getTextFromEl(el);
+        const userText      = userEl ? getTextFromEl(userEl) : "";
 
-    if (resp?.ok) {
-      // Success
-      btn.classList.add("engram-btn-saved");
-      btn.querySelector(".engram-btn-icon").textContent = "✓";
-      btn.querySelector(".engram-btn-label").textContent =
-        `Saved to ${label}`;
-      // Reset after 3s
-      setTimeout(() => {
-        btn.classList.remove("engram-btn-saved");
-        btn.querySelector(".engram-btn-icon").textContent = "⬡";
-        btn.querySelector(".engram-btn-label").textContent = "Save to ENGRAM";
-        btn.querySelector(".engram-btn-caret").style.display = "";
-        wrap.classList.remove("engram-open");
-      }, 3000);
-    } else {
-      // Error
-      btn.classList.add("engram-btn-error");
-      btn.querySelector(".engram-btn-icon").textContent = "✕";
-      btn.querySelector(".engram-btn-label").textContent =
-        resp?.error?.includes("sign in") ? "Sign in first" : "Failed — retry?";
-      btn.querySelector(".engram-btn-caret").style.display = "none";
-      setTimeout(() => {
-        btn.classList.remove("engram-btn-error");
-        btn.querySelector(".engram-btn-icon").textContent = "⬡";
-        btn.querySelector(".engram-btn-label").textContent = "Save to ENGRAM";
-        btn.querySelector(".engram-btn-caret").style.display = "";
-        wrap.classList.remove("engram-open");
-      }, 4000);
+        // Only require the assistant text to be non-empty
+        if (!assistantText) return;
+
+        attachSaveButton(el, userText, assistantText);
+      });
+    } catch (err) {
+      console.error("[engram] injectSaveButtons error:", err);
     }
   }
 
-  // Escape HTML for team names in button markup
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  // Inject save buttons into all undecorated AI responses on the page
-  function injectSaveButtons() {
-    const config = getPlatformConfig();
-    if (!config) return;
-
-    // Collect all message elements (both user and assistant) in DOM order
-    const allEls = [];
-    const combined = `${config.assistantSel}, ${config.userSel}`;
-    document.querySelectorAll(combined).forEach((el) => {
-      const isAssistant = el.matches(config.assistantSel);
-      allEls.push({ el, role: isAssistant ? "assistant" : "user" });
-    });
-
-    // Walk the list: for each assistant element, find its preceding user msg
-    allEls.forEach(({ el, role }, idx) => {
-      if (role !== "assistant") return;
-      if (el.dataset.engramBtn) return; // already decorated
-
-      // Find the most recent user message before this assistant element
-      let userEl = null;
-      for (let i = idx - 1; i >= 0; i--) {
-        if (allEls[i].role === "user") { userEl = allEls[i].el; break; }
-      }
-      if (!userEl) return;
-
-      const assistantText = getTextFromEl(el, config.textSel);
-      const userText      = getTextFromEl(userEl, config.textSel);
-      if (!assistantText || !userText) return;
-
-      // Mark injected BEFORE DOM manipulation to prevent double-inject
-      el.dataset.engramBtn = "1";
-
-      // Add hover class to the appropriate parent container
-      const hoverTarget = config.getHoverTarget(el);
-      if (hoverTarget && !hoverTarget.dataset.engramHover) {
-        hoverTarget.classList.add("engram-msg-hoverable");
-        hoverTarget.dataset.engramHover = "1";
-      }
-
-      const btnWrap = createSaveButton(userText, assistantText);
-      const insertTarget = config.getInsert(el);
-      insertTarget.appendChild(btnWrap);
-    });
-  }
-
-  // Debounced version — called from MutationObserver so we don't thrash
+  // Debounced version — called from MutationObserver
   function scheduleSaveButtonInjection() {
     if (injectTimer) clearTimeout(injectTimer);
     injectTimer = setTimeout(() => {
       injectTimer = null;
       injectSaveButtons();
-    }, 1200); // slightly faster than capture debounce (8s) so buttons appear promptly
+    }, 1200);
   }
 
   async function tryCapture({ reason, verbose, minPairs = 2 }) {

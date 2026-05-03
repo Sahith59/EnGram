@@ -76,35 +76,34 @@
 
 /* ============================================================
    ENGRAM — Inline Save Button  (Option C per-response routing)
+   ============================================================
+   NOTE: Hover visibility is controlled via JS mouseenter/mouseleave
+   events (not CSS :hover) so it works even when the host page sets
+   pointer-events:none on message containers. The dropdown uses
+   position:fixed and is appended to document.body to bypass any
+   overflow:hidden clipping in the platform's layout.
    ============================================================ */
 
-/*
- * .engram-msg-hoverable  — added to each AI response container
- * .engram-save-wrap      — the button + dropdown bundle
- * .engram-save-btn       — the visible pill trigger
- * .engram-dropdown       — the routing panel
- */
-
-/* Wrap: invisible until the parent is hovered or dropdown is open */
+/* Button wrap — hidden by default, shown via JS on hover */
 .engram-save-wrap {
-  position: relative;
   display: inline-flex;
   align-items: center;
   margin-top: 10px;
   opacity: 0;
-  transition: opacity 0.18s ease;
   pointer-events: none;
-  /* Isolate stacking context so the dropdown clears the page UI */
-  isolation: isolate;
+  transition: opacity 0.18s ease;
+  /* Keep stacking context local to avoid interfering with page layout */
+  position: relative;
+  z-index: 1;
 }
 
-.engram-msg-hoverable:hover .engram-save-wrap,
+/* Visible when hovered (set by JS) or while saving/open */
 .engram-save-wrap.engram-open {
-  opacity: 1;
-  pointer-events: auto;
+  opacity: 1 !important;
+  pointer-events: auto !important;
 }
 
-/* ---- Trigger pill ---- */
+/* ---- Trigger pill button ---- */
 .engram-save-btn {
   display: inline-flex;
   align-items: center;
@@ -133,7 +132,7 @@
 }
 .engram-save-btn:active { transform: scale(0.965); }
 
-/* States */
+/* Button states */
 .engram-save-btn.engram-btn-saving {
   color: #9ca3af;
   background: rgba(156, 163, 175, 0.08);
@@ -154,7 +153,7 @@
   cursor: default;
 }
 
-/* Caret rotates when open */
+/* Caret rotates when dropdown is open */
 .engram-btn-caret {
   font-size: 9px;
   opacity: 0.6;
@@ -164,18 +163,17 @@
   transform: rotate(180deg);
 }
 
-/* ---- Dropdown panel ---- */
+/* ---- Global dropdown (position:fixed, lives on document.body) ---- */
+#engram-global-dropdown,
 .engram-dropdown {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  min-width: 220px;
+  position: fixed;
+  min-width: 222px;
   background: #0f0e1a;
-  border: 1px solid rgba(124, 58, 237, 0.3);
+  border: 1px solid rgba(124, 58, 237, 0.32);
   border-radius: 12px;
   box-shadow:
-    0 24px 56px rgba(0, 0, 0, 0.6),
-    0 4px 16px rgba(124, 58, 237, 0.14),
+    0 24px 56px rgba(0, 0, 0, 0.65),
+    0 4px 16px rgba(124, 58, 237, 0.16),
     inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   overflow: hidden;
   z-index: 2147483646;
@@ -185,13 +183,14 @@
   transform-origin: bottom left;
   transition: opacity 0.15s ease, transform 0.15s ease;
 }
+#engram-global-dropdown.engram-dropdown-open,
 .engram-dropdown.engram-dropdown-open {
   opacity: 1;
   transform: translateY(0) scale(1);
   pointer-events: auto;
 }
 
-/* Header */
+/* Dropdown header */
 .engram-dropdown-header {
   display: flex;
   align-items: baseline;
@@ -215,7 +214,7 @@
   font-weight: 500;
 }
 
-/* Section label (e.g. "TEAM") */
+/* Section label inside dropdown */
 .engram-dropdown-section {
   padding: 8px 14px 3px;
   font-size: 9px;
@@ -232,7 +231,7 @@
   margin: 3px 0;
 }
 
-/* Each destination row */
+/* Destination rows */
 .engram-dropdown-item {
   display: flex;
   align-items: center;
@@ -255,7 +254,7 @@
 .engram-item-icon  { font-size: 14px; flex-shrink: 0; width: 20px; text-align: center; }
 .engram-item-label { flex: 1; font-weight: 500; }
 
-/* Scope badge */
+/* Role / scope badge */
 .engram-item-badge {
   font-size: 9px;
   font-weight: 700;
@@ -269,7 +268,7 @@
 .engram-badge-team     { background: rgba(124, 58, 237, 0.22); color: #a78bfa; }
 .engram-badge-owner    { background: rgba(245, 158, 11, 0.2);  color: #fbbf24; }
 
-/* Saving spinner */
+/* Saving state spinner */
 @keyframes engram-spin { to { transform: rotate(360deg); } }
 .engram-spinner {
   display: inline-block;
