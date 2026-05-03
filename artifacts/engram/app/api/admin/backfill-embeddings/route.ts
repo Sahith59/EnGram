@@ -59,8 +59,15 @@ export async function POST(request: NextRequest) {
   // someone else's data.
   // Privacy: only embed rows the caller can actually see — their own
   // captures plus team-shared ones. Never touch another user's personal
-  // snapshots (which would otherwise be sent to OpenAI).
+  // snapshots (which would otherwise be sent to OpenAI). Probe column
+  // existence first to avoid error-sniffing fragility.
   const admin = createAdminClient();
+  const probe = await admin
+    .from("context_snapshots")
+    .select("visibility")
+    .limit(1);
+  const hasVisibility =
+    !probe.error || !/visibility/i.test(probe.error.message ?? "");
   let rows: Array<{
     id: string;
     title: string | null;
@@ -70,7 +77,7 @@ export async function POST(request: NextRequest) {
     tags: string[] | null;
   }> | null = null;
   let fetchError: { message: string } | null = null;
-  {
+  if (hasVisibility) {
     const res = await admin
       .from("context_snapshots")
       .select("id, title, summary, decision, rationale, tags")
@@ -79,23 +86,20 @@ export async function POST(request: NextRequest) {
       .or(`created_by.eq.${user.id},visibility.eq.team`)
       .order("created_at", { ascending: false })
       .limit(batchSize);
-    if (res.error && /visibility/i.test(res.error.message ?? "")) {
-      // Migration 0004 not applied yet — fall back to created_by only,
-      // which is the strictest safe filter.
-      const legacy = await admin
-        .from("context_snapshots")
-        .select("id, title, summary, decision, rationale, tags")
-        .eq("team_id", profile.team_id)
-        .is("embedding", null)
-        .eq("created_by", user.id)
-        .order("created_at", { ascending: false })
-        .limit(batchSize);
-      rows = legacy.data;
-      fetchError = legacy.error;
-    } else {
-      rows = res.data;
-      fetchError = res.error;
-    }
+    rows = res.data;
+    fetchError = res.error;
+  } else {
+    // Migration 0004 not applied — restrict to the caller's own rows.
+    const legacy = await admin
+      .from("context_snapshots")
+      .select("id, title, summary, decision, rationale, tags")
+      .eq("team_id", profile.team_id)
+      .is("embedding", null)
+      .eq("created_by", user.id)
+      .order("created_at", { ascending: false })
+      .limit(batchSize);
+    rows = legacy.data;
+    fetchError = legacy.error;
   }
 
   if (fetchError) {
@@ -161,21 +165,23 @@ export async function POST(request: NextRequest) {
   const failed = results.length - succeeded;
 
   // How many caller-visible rows are still without embeddings?
-  const remainingRes = await admin
-    .from("context_snapshots")
-    .select("id", { count: "exact", head: true })
-    .eq("team_id", profile.team_id)
-    .is("embedding", null)
-    .or(`created_by.eq.${user.id},visibility.eq.team`);
-  let remaining = remainingRes.count;
-  if (remainingRes.error && /visibility/i.test(remainingRes.error.message ?? "")) {
-    const legacy = await admin
+  let remaining: number | null = null;
+  if (hasVisibility) {
+    const r = await admin
+      .from("context_snapshots")
+      .select("id", { count: "exact", head: true })
+      .eq("team_id", profile.team_id)
+      .is("embedding", null)
+      .or(`created_by.eq.${user.id},visibility.eq.team`);
+    remaining = r.count;
+  } else {
+    const r = await admin
       .from("context_snapshots")
       .select("id", { count: "exact", head: true })
       .eq("team_id", profile.team_id)
       .is("embedding", null)
       .eq("created_by", user.id);
-    remaining = legacy.count;
+    remaining = r.count;
   }
 
   return NextResponse.json({
@@ -211,42 +217,56 @@ export async function GET() {
     return NextResponse.json({ error: "User has no team" }, { status: 400 });
   }
   // Status only counts rows the caller can actually see — matches what
-  // POST will process.
+  // POST will process. Probe whether the visibility column exists once;
+  // if not (migration 0004 not applied), restrict to the user's own
+  // rows. This avoids fragile error-message sniffing on `.or()` filters.
   const admin = createAdminClient();
-  const visScope = `created_by.eq.${user.id},visibility.eq.team`;
+  const probe = await admin
+    .from("context_snapshots")
+    .select("visibility")
+    .limit(1);
+  const hasVisibility =
+    !probe.error || !/visibility/i.test(probe.error.message ?? "");
   let missing: number | null = null;
   let total: number | null = null;
-  {
+  if (hasVisibility) {
+    const visScope = `created_by.eq.${user.id},visibility.eq.team`;
     const m = await admin
       .from("context_snapshots")
       .select("id", { count: "exact", head: true })
       .eq("team_id", profile.team_id)
       .is("embedding", null)
       .or(visScope);
-    if (m.error && /visibility/i.test(m.error.message ?? "")) {
-      const legacy = await admin
-        .from("context_snapshots")
-        .select("id", { count: "exact", head: true })
-        .eq("team_id", profile.team_id)
-        .is("embedding", null)
-        .eq("created_by", user.id);
-      missing = legacy.count ?? 0;
-      const legacyT = await admin
-        .from("context_snapshots")
-        .select("id", { count: "exact", head: true })
-        .eq("team_id", profile.team_id)
-        .eq("created_by", user.id);
-      total = legacyT.count ?? 0;
-    } else {
-      missing = m.count ?? 0;
-      const t = await admin
-        .from("context_snapshots")
-        .select("id", { count: "exact", head: true })
-        .eq("team_id", profile.team_id)
-        .or(visScope);
-      total = t.count ?? 0;
-    }
+    missing = m.count ?? 0;
+    const t = await admin
+      .from("context_snapshots")
+      .select("id", { count: "exact", head: true })
+      .eq("team_id", profile.team_id)
+      .or(visScope);
+    total = t.count ?? 0;
+  } else {
+    // Personal-only fallback (no visibility column yet)
+    const m = await admin
+      .from("context_snapshots")
+      .select("id", { count: "exact", head: true })
+      .eq("team_id", profile.team_id)
+      .is("embedding", null)
+      .eq("created_by", user.id);
+    missing = m.count ?? 0;
+    const t = await admin
+      .from("context_snapshots")
+      .select("id", { count: "exact", head: true })
+      .eq("team_id", profile.team_id)
+      .eq("created_by", user.id);
+    total = t.count ?? 0;
   }
+  console.log("[backfill-status]", {
+    hasVisibility,
+    teamId: profile.team_id,
+    userId: user.id,
+    total,
+    missing,
+  });
   // Probe the OpenAI key with a tiny request so the UI can tell the
   // difference between "no key" / "key works" / "key out of quota".
   let openAIStatus: "ok" | "missing" | "quota" | "auth" | "error" = "missing";
