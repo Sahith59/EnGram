@@ -1,1 +1,11 @@
-{}
+{
+  "/api/contexts/route": "app/api/contexts/route.js",
+  "/api/contexts/[id]/export/route": "app/api/contexts/[id]/export/route.js",
+  "/api/resume/route": "app/api/resume/route.js",
+  "/api/admin/backfill-embeddings/route": "app/api/admin/backfill-embeddings/route.js",
+  "/api/contexts/[id]/route": "app/api/contexts/[id]/route.js",
+  "/api/contexts/[id]/adr/route": "app/api/contexts/[id]/adr/route.js",
+  "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
+  "/(app)/ask/page": "app/(app)/ask/page.js",
+  "/(app)/context/[id]/page": "app/(app)/context/[id]/page.js"
+}
