@@ -5,6 +5,7 @@ import { anthropic } from "@/lib/anthropic";
 import { corsOptions, withCors } from "@/lib/cors";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { ensureUserTeam } from "@/lib/team";
+import { hashConversation } from "@/lib/hash";
 
 export function OPTIONS(request: NextRequest) {
   return corsOptions(request);
@@ -94,6 +95,34 @@ export async function POST(request: NextRequest) {
   if (!resolvedTeamId) {
     return withCors(
       NextResponse.json({ error: "Could not bootstrap workspace" }, { status: 500 }),
+      request
+    );
+  }
+
+  // ----- Dedup BEFORE spending tokens on Claude -----
+  const contentHash = hashConversation(pairs);
+  const { data: existing } = await admin
+    .from("context_snapshots")
+    .select("id, title, summary")
+    .eq("team_id", resolvedTeamId)
+    .eq("content_hash", contentHash)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existing) {
+    return withCors(
+      NextResponse.json(
+        {
+          success: true,
+          duplicate: true,
+          id: existing.id,
+          title: existing.title,
+          summary: existing.summary,
+          message: "Content unchanged — reused existing snapshot.",
+        },
+        { status: 200 }
+      ),
       request
     );
   }
@@ -206,6 +235,8 @@ Captured: ${new Date().toISOString()}`,
       tags: extraction.technologies ?? [],
       decision: extraction.key_decisions ?? null,
       rationale: extraction.context_md ?? null,
+      content_hash: contentHash,
+      source_url: url ?? null,
     })
     .select("id, title, summary")
     .single();

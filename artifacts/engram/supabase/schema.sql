@@ -47,9 +47,19 @@ create table if not exists public.context_snapshots (
   decision            text,
   rationale           text,
   embedding           vector(1536),
+  content_hash        text,
+  source_url          text,
   created_at          timestamptz not null default now(),
   updated_at          timestamptz not null default now()
 );
+
+create index if not exists idx_context_snapshots_team_hash
+  on public.context_snapshots(team_id, content_hash)
+  where content_hash is not null;
+
+create index if not exists idx_context_snapshots_team_source_url
+  on public.context_snapshots(team_id, source_url)
+  where source_url is not null;
 
 -- KT Queries (knowledge transfer natural-language queries)
 create table if not exists public.kt_queries (

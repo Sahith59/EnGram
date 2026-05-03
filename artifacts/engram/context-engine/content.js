@@ -3,6 +3,11 @@
 // Runs in ChatGPT / Claude / Gemini pages.
 // Watches for new conversation turns and silently captures
 // snapshots in the background. Manual capture is also supported.
+//
+// DEDUP STRATEGY (Phase 5B):
+//  1. Per-conversation fingerprint persisted in chrome.storage.local
+//     keyed by source URL — survives tab reloads, profile switches.
+//  2. Server-side SHA-256 dedup as the safety net (free if dup hits).
 // ============================================================
 
 (() => {
@@ -22,11 +27,65 @@
     "memory full",
   ];
 
+  const STORAGE_KEY = "engram_fingerprints"; // { [url]: { fp, ts } }
+  const FINGERPRINT_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
   // ----- State -----
   let lastCaptureAt = 0;
-  let lastCaptureFingerprint = "";
+  let lastCaptureFingerprint = ""; // in-memory cache for current page
   let lastUrl = location.href;
   let pendingTimer = null;
+  let storageHydrated = false;
+
+  // ----- Persistent fingerprint store -----
+  function urlKey(url) {
+    // Normalize: drop hash, drop query params that are tracking-only
+    try {
+      const u = new URL(url);
+      return `${u.hostname}${u.pathname}`;
+    } catch {
+      return url;
+    }
+  }
+
+  function getStoredFingerprint(url) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get([STORAGE_KEY], (res) => {
+          const all = res?.[STORAGE_KEY] ?? {};
+          const entry = all[urlKey(url)];
+          if (!entry) return resolve(null);
+          if (Date.now() - entry.ts > FINGERPRINT_TTL_MS) return resolve(null);
+          resolve(entry.fp);
+        });
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  function setStoredFingerprint(url, fp) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get([STORAGE_KEY], (res) => {
+          const all = res?.[STORAGE_KEY] ?? {};
+          // GC old entries (cap to ~500)
+          const keys = Object.keys(all);
+          if (keys.length > 500) {
+            const sorted = keys
+              .map((k) => [k, all[k].ts || 0])
+              .sort((a, b) => a[1] - b[1])
+              .slice(0, keys.length - 400);
+            sorted.forEach(([k]) => delete all[k]);
+          }
+          all[urlKey(url)] = { fp, ts: Date.now() };
+          chrome.storage.local.set({ [STORAGE_KEY]: all }, resolve);
+        });
+      } catch {
+        resolve();
+      }
+    });
+  }
 
   // ----- Pair extraction (per-tool DOM probes) -----
   function extractPairs() {
@@ -70,11 +129,15 @@
     return LIMIT_PHRASES.some((p) => text.includes(p));
   }
 
-  // ----- Conversation fingerprint (cheap dedup of "same chat, same length") -----
+  // ----- Fingerprint: stable signature of current conversation -----
+  // Uses pair count + length + first/last content slices. Cheap, deterministic,
+  // matches across reloads of the same conversation.
   function fingerprint(pairs) {
     if (!pairs.length) return "";
-    const last = pairs[pairs.length - 1];
-    return `${pairs.length}:${(last.content || "").slice(0, 80)}`;
+    const total = pairs.reduce((a, p) => a + (p.content?.length || 0), 0);
+    const first = pairs[0]?.content?.slice(0, 60) ?? "";
+    const last = pairs[pairs.length - 1]?.content?.slice(0, 60) ?? "";
+    return `${pairs.length}:${total}:${first}|${last}`;
   }
 
   // ----- Toast UI -----
@@ -112,7 +175,7 @@
     }
   }
 
-  // ----- Capture core (silent unless verbose=true) -----
+  // ----- Capture core -----
   function send(payload) {
     return new Promise((resolve) =>
       chrome.runtime.sendMessage(
@@ -136,13 +199,26 @@
     }
 
     const fp = fingerprint(pairs);
+
+    // Check in-memory first (fast path)
     if (fp === lastCaptureFingerprint && reason !== "manual" && reason !== "limit") {
-      // Nothing meaningfully changed since the last save
-      return { ok: false, error: "no_change" };
+      return { ok: false, error: "no_change_memory" };
+    }
+
+    // Check persistent storage (survives reloads / tab reopens)
+    if (reason !== "manual" && reason !== "limit") {
+      const stored = await getStoredFingerprint(location.href);
+      if (stored === fp) {
+        lastCaptureFingerprint = fp; // hydrate in-memory cache
+        if (reason === "first" || reason === "nav") {
+          // Silent — user just revisited an already-captured conversation
+          return { ok: false, error: "no_change_persisted" };
+        }
+        return { ok: false, error: "no_change_persisted" };
+      }
     }
 
     const now = Date.now();
-    // Hard floor: never more than once every 20 seconds for any reason.
     if (now - lastCaptureAt < 20_000 && reason !== "manual") {
       return { ok: false, error: "throttled" };
     }
@@ -158,9 +234,15 @@
     });
 
     if (resp?.ok) {
-      // For background autocaptures, show a subtle toast only on the first
-      // capture of a session — otherwise stay silent.
-      if (verbose || reason === "first" || reason === "limit") {
+      // Persist fingerprint (even on duplicate — server may have rejected as dup)
+      await setStoredFingerprint(location.href, fp);
+
+      // Don't toast on duplicates returned by server
+      if (resp.data?.duplicate) {
+        return resp;
+      }
+
+      if (verbose || reason === "limit") {
         toast({
           kind: "ok",
           title: resp.data?.title ?? "Snapshot saved",
@@ -176,8 +258,6 @@
   // ----- Debounced reactive capture (fired by MutationObserver) -----
   function scheduleCapture(reason = "change") {
     if (pendingTimer) clearTimeout(pendingTimer);
-    // Wait 8s of quiet after the last DOM change so we capture *complete*
-    // assistant responses, not half-streamed ones.
     pendingTimer = setTimeout(() => {
       pendingTimer = null;
       tryCapture({ reason, verbose: false, minPairs: 2 });
@@ -190,15 +270,14 @@
     tryCapture({ reason: "limit", verbose: true, minPairs: 1 });
   }
 
-  // ----- URL change detection (SPA navigation between conversations) -----
+  // ----- URL change detection -----
   function watchUrlChanges() {
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
-        // Reset fingerprint when switching conversations
-        lastCaptureFingerprint = "";
-        // Capture the *previous* conversation we were on (best effort)
-        scheduleCapture("nav");
+        lastCaptureFingerprint = ""; // reset in-memory; persistent store still authoritative
+        // Don't auto-fire capture on nav — wait for MutationObserver to see new content,
+        // and persistent fingerprint will short-circuit if conversation unchanged.
       }
     }, 1500);
     window.addEventListener("beforeunload", () => clearInterval(interval));
@@ -208,13 +287,13 @@
   function watchVisibility() {
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {
-        // Best-effort flush
+        // Best-effort flush — fingerprint check will skip if unchanged
         tryCapture({ reason: "visibility", verbose: false, minPairs: 2 });
       }
     });
   }
 
-  // ----- Mutation observer: react to new messages appearing -----
+  // ----- Mutation observer -----
   function watchDom() {
     const observer = new MutationObserver(() => {
       scheduleCapture("change");
@@ -228,7 +307,6 @@
   }
 
   // ----- Listener for "Capture now" / ping from popup -----
-  // Guard against double-injection: only register once per page.
   if (!window.__engramListenerInstalled) {
     window.__engramListenerInstalled = true;
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -244,23 +322,29 @@
   }
 
   // ----- Boot -----
-  function boot() {
+  async function boot() {
     if (window.__engramBooted) return;
     window.__engramBooted = true;
+
+    // Hydrate fingerprint from storage so first DOM mutation doesn't re-capture
+    const stored = await getStoredFingerprint(location.href);
+    if (stored) {
+      lastCaptureFingerprint = stored;
+    }
+    storageHydrated = true;
 
     watchDom();
     watchUrlChanges();
     watchVisibility();
     setInterval(checkContextLimit, 5000);
-    // Safety net: every 2 minutes, force a check even if MutationObserver missed
-    setInterval(() => scheduleCapture("heartbeat"), 120_000);
+    // Heartbeat: every 5 minutes (not 2). Fingerprint check will short-circuit
+    // if nothing changed, so this is essentially free.
+    setInterval(() => scheduleCapture("heartbeat"), 5 * 60_000);
 
-    // First-load capture (after DOM settles) — gives users immediate feedback
-    setTimeout(() => {
-      tryCapture({ reason: "first", verbose: false, minPairs: 4 });
-    }, 4000);
+    // NOTE: no more `reason: "first"` auto-fire. MutationObserver + visibility
+    // handle real changes. Persistent fingerprint prevents revisit duplicates.
 
-    console.log("[engram] intelligent capture armed for", TOOL);
+    console.log("[engram] intelligent capture armed for", TOOL, stored ? "(known conversation)" : "(new conversation)");
   }
 
   if (document.readyState === "loading") {
