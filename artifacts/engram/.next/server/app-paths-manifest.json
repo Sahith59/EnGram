@@ -1,15 +1,14 @@
 {
-  "/api/capture/route": "app/api/capture/route.js",
   "/api/teams/route": "app/api/teams/route.js",
-  "/api/resume/route": "app/api/resume/route.js",
   "/api/admin/backfill-embeddings/route": "app/api/admin/backfill-embeddings/route.js",
+  "/api/capture/route": "app/api/capture/route.js",
   "/api/me/route": "app/api/me/route.js",
-  "/page": "app/page.js",
   "/api/contexts/route": "app/api/contexts/route.js",
   "/api/contexts/[id]/export/route": "app/api/contexts/[id]/export/route.js",
-  "/(app)/team/page": "app/(app)/team/page.js",
-  "/(app)/context/[id]/page": "app/(app)/context/[id]/page.js",
-  "/(app)/settings/extension/page": "app/(app)/settings/extension/page.js",
+  "/api/contexts/[id]/route": "app/api/contexts/[id]/route.js",
   "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
+  "/(app)/settings/extension/page": "app/(app)/settings/extension/page.js",
+  "/(app)/context/[id]/page": "app/(app)/context/[id]/page.js",
+  "/(app)/team/page": "app/(app)/team/page.js",
   "/(app)/digest/page": "app/(app)/digest/page.js"
 }

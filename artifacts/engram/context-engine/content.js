@@ -17,6 +17,20 @@
   else if (HOST.includes("claude")) TOOL = "claude";
   else if (HOST.includes("gemini")) TOOL = "gemini";
 
+  // Unique nonce for THIS injection. Each time Chrome re-injects the content
+  // script (e.g. after extension reload), a new nonce is generated. Boot and
+  // listener guards compare against the nonce so the new instance always wins
+  // over a stale orphaned context.
+  const ENGRAM_NONCE = `eg_${Math.random().toString(36).slice(2, 8)}`;
+
+  // Safe check: returns false once the extension context is invalidated.
+  // Wrapping chrome.runtime calls with this prevents the
+  // "Extension context invalidated" console errors that appear when the page
+  // is still open after an extension reload.
+  function isContextAlive() {
+    try { return !!chrome.runtime?.id; } catch { return false; }
+  }
+
   const LIMIT_PHRASES = [
     "conversation is getting long",
     "context length exceeded",
@@ -272,12 +286,19 @@
 
   // ----- Capture core -----
   function send(payload) {
-    return new Promise((resolve) =>
-      chrome.runtime.sendMessage(
-        { type: "CAPTURE", payload },
-        (resp) => resolve(resp)
-      )
-    );
+    if (!isContextAlive()) return Promise.resolve({ ok: false, error: "context_dead" });
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ type: "CAPTURE", payload }, (resp) => {
+          if (chrome.runtime.lastError) {
+            return resolve({ ok: false, error: chrome.runtime.lastError.message });
+          }
+          resolve(resp);
+        });
+      } catch (e) {
+        resolve({ ok: false, error: String(e) });
+      }
+    });
   }
 
   // ================================================================
@@ -341,13 +362,17 @@
 
   // Fetch teams via background (cross-origin credentialed fetch)
   async function loadTeamsCache() {
+    if (!isContextAlive()) return;
     try {
-      const resp = await new Promise((resolve) =>
-        chrome.runtime.sendMessage({ type: "GET_TEAMS" }, resolve)
-      );
-      if (resp?.ok && Array.isArray(resp.teams)) {
-        cachedTeams = resp.teams;
-      }
+      const resp = await new Promise((resolve) => {
+        try {
+          chrome.runtime.sendMessage({ type: "GET_TEAMS" }, (r) => {
+            if (chrome.runtime.lastError) return resolve({ ok: false });
+            resolve(r);
+          });
+        } catch { resolve({ ok: false }); }
+      });
+      if (resp?.ok && Array.isArray(resp.teams)) cachedTeams = resp.teams;
     } catch {
       cachedTeams = [];
     }
@@ -422,20 +447,30 @@
 
   // Send exactly one (user + assistant) pair to the chosen destination
   async function captureSpecificPair(userText, assistantText, mode, teamId) {
+    if (!isContextAlive()) return { ok: false, error: "context_dead" };
     const pairs = [
       { role: "user",      content: userText      },
       { role: "assistant", content: assistantText },
     ];
-    return new Promise((resolve) =>
-      chrome.runtime.sendMessage(
-        {
-          type: "CAPTURE_PAIR",
-          payload: { pairs, tool: TOOL, url: location.href, mode,
-                     teamId: teamId || undefined },
-        },
-        resolve
-      )
-    );
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(
+          {
+            type: "CAPTURE_PAIR",
+            payload: { pairs, tool: TOOL, url: location.href, mode,
+                       teamId: teamId || undefined },
+          },
+          (resp) => {
+            if (chrome.runtime.lastError) {
+              return resolve({ ok: false, error: chrome.runtime.lastError.message });
+            }
+            resolve(resp);
+          }
+        );
+      } catch (e) {
+        resolve({ ok: false, error: String(e) });
+      }
+    });
   }
 
   // Show the global dropdown anchored to the given button element
@@ -812,24 +847,56 @@
   }
 
   // ----- Listener for "Capture now" / ping from popup -----
-  if (!window.__engramListenerInstalled) {
-    window.__engramListenerInstalled = true;
-    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-      if (msg?.type === "PING") {
-        sendResponse({ ok: true, ready: true });
-        return false;
-      }
-      if (msg?.type === "CAPTURE_NOW") {
-        tryCapture({ reason: "manual", verbose: true, minPairs: 1 }).then(sendResponse);
-        return true;
-      }
-    });
+  // Use nonce-based guard: each new injection installs its own listener,
+  // replacing the dead one left by any previously orphaned context.
+  if (window.__engramListenerInstalled !== ENGRAM_NONCE) {
+    window.__engramListenerInstalled = ENGRAM_NONCE;
+    try {
+      chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+        if (!isContextAlive()) return false;
+        if (msg?.type === "PING") {
+          sendResponse({ ok: true, ready: true });
+          return false;
+        }
+        if (msg?.type === "CAPTURE_NOW") {
+          tryCapture({ reason: "manual", verbose: true, minPairs: 1 }).then(sendResponse);
+          return true;
+        }
+      });
+    } catch (e) {
+      console.warn("[engram] could not install message listener:", e);
+    }
   }
 
   // ----- Boot -----
   async function boot() {
-    if (window.__engramBooted) return;
-    window.__engramBooted = true;
+    // Nonce-based guard: if THIS exact injection already booted, skip.
+    // If a DIFFERENT injection (e.g. old orphaned context) set the flag,
+    // we take over — clean up its injected elements and re-run.
+    const prevNonce = window.__engramBooted;
+    if (prevNonce === ENGRAM_NONCE) return;
+    window.__engramBooted = ENGRAM_NONCE;
+
+    // If a previous injection left buttons on the page, remove them so we
+    // can re-inject fresh ones with working event handlers.
+    if (prevNonce) {
+      try {
+        document.querySelectorAll(".engram-save-wrap").forEach((el) => el.remove());
+        document.querySelectorAll("[data-engram-btn]").forEach((el) => {
+          delete el.dataset.engramBtn;
+        });
+        document.querySelectorAll("[data-engram-hover-bound]").forEach((el) => {
+          delete el.dataset.engramHoverBound;
+        });
+        document.getElementById("engram-global-dropdown")?.remove();
+        engramGlobalDropdown = null;
+      } catch {}
+    }
+
+    if (!isContextAlive()) {
+      console.warn("[engram] context already dead at boot — aborting");
+      return;
+    }
 
     // Hydrate fingerprint from storage so first DOM mutation doesn't re-capture
     const stored = await getStoredFingerprint(location.href);
@@ -842,8 +909,7 @@
     watchUrlChanges();
     watchVisibility();
     setInterval(checkContextLimit, 5000);
-    // Heartbeat: every 5 minutes (not 2). Fingerprint check will short-circuit
-    // if nothing changed, so this is essentially free.
+    // Heartbeat: every 5 minutes. Fingerprint check will short-circuit if nothing changed.
     setInterval(() => scheduleCapture("heartbeat"), 5 * 60_000);
 
     // Load teams for the inline save-button dropdown, then inject buttons
@@ -851,10 +917,8 @@
     await loadTeamsCache();
     injectSaveButtons();
 
-    // NOTE: no more `reason: "first"` auto-fire. MutationObserver + visibility
-    // handle real changes. Persistent fingerprint prevents revisit duplicates.
-
-    console.log("[engram] intelligent capture armed for", TOOL, stored ? "(known conversation)" : "(new conversation)");
+    console.log("[engram] v0.3.1 armed for", TOOL, `(nonce: ${ENGRAM_NONCE})`,
+      stored ? "· known conversation" : "· new conversation");
   }
 
   if (document.readyState === "loading") {
