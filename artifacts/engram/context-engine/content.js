@@ -49,6 +49,12 @@
   let lastUrl = location.href;
   let pendingTimer = null;
   let storageHydrated = false;
+  // Page-load grace window: ignore visibility/heartbeat captures fired in the
+  // first PAGE_LOAD_GRACE_MS after boot. Stops "browser reopen / tab focus
+  // re-render → MutationObserver fires → capture" duplication entirely.
+  // Manual captures and limit-detection still go through.
+  const PAGE_LOAD_GRACE_MS = 30_000;
+  const bootedAt = Date.now();
 
   // ----- Persistent fingerprint store -----
   function urlKey(url) {
@@ -174,14 +180,39 @@
   }
 
   // ----- Fingerprint: stable signature of current conversation -----
-  // Uses pair count + length + first/last content slices. Cheap, deterministic,
-  // matches across reloads of the same conversation.
+  // STABLE: based on pair count + first user message identity ONLY.
+  // Intentionally excludes total length and last-message slices — those drift
+  // when the AI tool re-renders the page (Material-icon ligatures appear /
+  // disappear, streaming edits, draft toggles). The server's content_hash is
+  // the source of truth for content equality; this fingerprint just answers
+  // "is this the same conversation at the same number of turns?"
+  //
+  // Used by the in-memory + chrome.storage caches to short-circuit captures
+  // we've already sent. Pair count is what changes when a real new turn
+  // happens — that's exactly when we want to send.
+  function stripUiNoiseLite(s) {
+    // Mirrors the server's noise list — kept short on purpose. Just enough to
+    // make the first-message slice stable across renders.
+    return (s || "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(
+        (l) =>
+          l &&
+          !/^(copy|copy_all|edit|share|thumb_up|thumb_down|volume_up|more_vert|regenerate|good response|bad response|show drafts|hide drafts)$/i.test(
+            l
+          )
+      )
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
   function fingerprint(pairs) {
     if (!pairs.length) return "";
-    const total = pairs.reduce((a, p) => a + (p.content?.length || 0), 0);
-    const first = pairs[0]?.content?.slice(0, 60) ?? "";
-    const last = pairs[pairs.length - 1]?.content?.slice(0, 60) ?? "";
-    return `${pairs.length}:${total}:${first}|${last}`;
+    const firstUser =
+      pairs.find((p) => (p.role || "").toLowerCase() === "user") ?? pairs[0];
+    const seed = stripUiNoiseLite(firstUser?.content ?? "").slice(0, 200);
+    return `v2:${pairs.length}:${seed}`;
   }
 
   // ----- Toast UI -----
@@ -250,6 +281,18 @@
   }
 
   async function tryCapture({ reason, verbose, minPairs = 2 }) {
+    // Page-load grace: never auto-fire on visibility/heartbeat/change events
+    // in the first 30s after boot. This is the window where the browser is
+    // restoring tabs, Gemini is rerendering its DOM, and the MutationObserver
+    // would otherwise fire a redundant capture of an already-saved conversation.
+    // Manual ("Capture now" button) and "limit" (context full) bypass.
+    if (
+      reason !== "manual" &&
+      reason !== "limit" &&
+      Date.now() - bootedAt < PAGE_LOAD_GRACE_MS
+    ) {
+      return { ok: false, error: "page_load_grace" };
+    }
     const pairs = extractPairs();
     if (pairs.length < minPairs) {
       if (verbose) {
