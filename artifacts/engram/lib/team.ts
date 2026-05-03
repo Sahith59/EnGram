@@ -51,14 +51,7 @@ export async function ensureUserTeam(user: {
     return null;
   }
 
-  // Mark this team as the user's personal workspace (idempotent)
-  await admin
-    .from("teams")
-    .update({ personal_for: user.id })
-    .eq("id", newTeam.id)
-    .is("personal_for", null);
-
-  // Upsert the profile with the new team
+  // Upsert the profile FIRST (personal_for FK requires the profile row to exist)
   const { error: profileErr } = await admin.from("profiles").upsert(
     {
       id: user.id,
@@ -75,6 +68,13 @@ export async function ensureUserTeam(user: {
     console.error("[ensureUserTeam] profile upsert failed:", profileErr);
     return null;
   }
+
+  // Now mark this team as the user's personal workspace (idempotent)
+  await admin
+    .from("teams")
+    .update({ personal_for: user.id })
+    .eq("id", newTeam.id)
+    .is("personal_for", null);
 
   // Ensure the team_members row exists (multi-team membership)
   await admin
