@@ -6,7 +6,10 @@
  *  2. Compare the new snapshot's embedding against each centroid.
  *  3. If the best match is above CLUSTER_THRESHOLD → assign to that project
  *     and update its centroid (online running average).
- *  4. Otherwise → create a new project, auto-name it via Claude Haiku.
+ *  4. Otherwise → before creating a NEW project, check if any repo-linked
+ *     workspace exists for this team. If one does, prefer it over spinning up
+ *     a duplicate manual project. Only create a new project when there are
+ *     genuinely no repo workspaces at all.
  *  5. Write project_id back onto the context_snapshot row.
  *
  * This runs non-blocking after a successful capture so it never
@@ -107,7 +110,6 @@ export async function assignSnapshotToProject(opts: {
     );
 
     if (rpcErr) {
-      // Table might not exist yet (migration not applied)
       console.warn("[clustering] find_nearest_project failed:", rpcErr.message);
       return null;
     }
@@ -122,12 +124,12 @@ export async function assignSnapshotToProject(opts: {
     let isNew: boolean;
 
     if (best) {
-      // ── Assign to existing project ───────────────────────────────────────
+      // ── Assign to existing project (centroid matched) ─────────────────────
       projectId = best.id;
       projectName = best.name;
       isNew = false;
 
-      // Fetch current centroid for weighted update
+      // Update centroid (running weighted average)
       const { data: proj } = await admin
         .from("projects")
         .select("centroid, snapshot_count")
@@ -150,26 +152,70 @@ export async function assignSnapshotToProject(opts: {
           .eq("id", projectId);
       }
     } else {
-      // ── Create new project ───────────────────────────────────────────────
-      isNew = true;
-      projectName = await autoNameProject(title, summary);
-
-      const { data: newProj, error: insertErr } = await admin
+      // ── No centroid match — check for repo-linked workspaces first ────────
+      // Before creating a new manual project, prefer any existing Repository
+      // Workspace for this team. This prevents the "QueryMesh Database Query
+      // Optimization" duplicate scenario where a conversation about a known
+      // repo ends up in a new orphan project because the workspace has 0
+      // captures and no centroid yet.
+      const { data: repoProjects } = await admin
         .from("projects")
-        .insert({
-          team_id: teamId,
-          name: projectName,
-          centroid: embedding as unknown as string,
-          snapshot_count: 1,
-        })
-        .select("id")
-        .single();
+        .select("id, name, github_repo_id, snapshot_count")
+        .eq("team_id", teamId)
+        .not("github_repo_id", "is", null)
+        .order("snapshot_count", { ascending: false })
+        .limit(10);
 
-      if (insertErr || !newProj) {
-        console.warn("[clustering] project insert failed:", insertErr?.message);
-        return null;
+      if (repoProjects && repoProjects.length > 0) {
+        // Pick the repo workspace with the fewest captures so new content
+        // is distributed rather than always piling onto the first one.
+        // If only one repo workspace exists it gets everything by default.
+        // We pick the one with the lowest count (but at least 1 to show it
+        // exists) if possible, otherwise just the first.
+        const target =
+          repoProjects.find((p) => p.snapshot_count === 0) ??
+          repoProjects[repoProjects.length - 1];
+
+        projectId = target.id;
+        projectName = target.name;
+        isNew = false;
+
+        console.log(
+          `[clustering] no centroid match → routing to repo workspace "${projectName}" ` +
+            `(github_repo_id=${target.github_repo_id}) to avoid orphan project`
+        );
+
+        // Seed centroid with this capture's embedding so future clustering works
+        await admin
+          .from("projects")
+          .update({
+            centroid: embedding as unknown as string,
+            snapshot_count: (target.snapshot_count ?? 0) + 1,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", projectId);
+      } else {
+        // ── No repo workspaces exist — create a new manual project ──────────
+        isNew = true;
+        projectName = await autoNameProject(title, summary);
+
+        const { data: newProj, error: insertErr } = await admin
+          .from("projects")
+          .insert({
+            team_id: teamId,
+            name: projectName,
+            centroid: embedding as unknown as string,
+            snapshot_count: 1,
+          })
+          .select("id")
+          .single();
+
+        if (insertErr || !newProj) {
+          console.warn("[clustering] project insert failed:", insertErr?.message);
+          return null;
+        }
+        projectId = newProj.id;
       }
-      projectId = newProj.id;
     }
 
     // 2. Assign project_id on the snapshot

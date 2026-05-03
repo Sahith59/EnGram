@@ -1,15 +1,19 @@
 /**
- * Semantic Repo Detector
+ * Repo Detector — three-tier routing engine
  *
- * Given a conversation embedding, searches ALL indexed GitHub repo chunks
- * for the team and aggregates similarity scores per repo. The repo with the
- * highest composite score (above threshold) wins — regardless of what tabs
- * are open in the browser. This is purely content-driven.
+ * Tier 1: GitHub URL mention (score = 1.0, always confident)
+ *   If the conversation text contains a github.com/owner/repo URL that
+ *   matches an indexed repo, route there immediately. Handles the case
+ *   where a developer pastes a repo link in ChatGPT and asks about it.
  *
- * Scoring formula per repo:
- *   score = 0.6 × topChunkScore + 0.4 × (avgChunkScore / globalAvg)
+ * Tier 2: Semantic chunk similarity (score = 0.35–1.0)
+ *   Embed the conversation → search ALL indexed repo chunks → aggregate
+ *   scores per repo → route to highest scorer above threshold. Purely
+ *   content-driven, zero browser-tab dependency.
  *
- * "Confident" = winning repo scores ≥ 0.08 ahead of second-best.
+ * Tier 3: (handled in capture route) centroid clustering fallback
+ *
+ * "Confident" = winning repo leads second place by ≥ 0.08.
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -26,12 +30,102 @@ export interface DetectedRepo {
   repoFullName: string;
   score: number;
   confident: boolean;
+  method: "url_mention" | "semantic";
 }
 
 interface ChunkRow {
   repo_id: number;
   similarity: number;
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Extract all github.com/owner/repo slugs from free text. */
+function extractGitHubSlugs(text: string): string[] {
+  const re = /github\.com\/([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)/gi;
+  const found = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    // Normalise: strip .git suffix, lowercase for comparison
+    const slug = `${m[1]}/${m[2].replace(/\.git$/i, "")}`.toLowerCase();
+    found.add(slug);
+  }
+  return Array.from(found);
+}
+
+/** Look up a project linked to a repo by full name (case-insensitive). */
+async function findProjectForRepo(
+  admin: ReturnType<typeof createAdminClient>,
+  teamId: string,
+  repoFullNameLower: string
+): Promise<{ projectId: string; projectName: string; repoId: number; repoFullName: string } | null> {
+  // Find the repo (ilike for case-insensitive match)
+  const { data: repo } = await admin
+    .from("github_repos")
+    .select("id, repo_full_name")
+    .eq("team_id", teamId)
+    .ilike("repo_full_name", repoFullNameLower)
+    .maybeSingle();
+
+  if (!repo) return null;
+
+  // Find the project linked to this repo
+  const { data: project } = await admin
+    .from("projects")
+    .select("id, name")
+    .eq("team_id", teamId)
+    .eq("github_repo_id", repo.id)
+    .maybeSingle();
+
+  if (!project) return null;
+
+  return {
+    projectId: project.id,
+    projectName: project.name,
+    repoId: repo.id,
+    repoFullName: repo.repo_full_name,
+  };
+}
+
+// ── Tier 1: GitHub URL mention ────────────────────────────────────────────────
+
+/**
+ * Scan conversation pairs for github.com/owner/repo URLs.
+ * If any match an indexed + project-linked repo, return it immediately
+ * with score=1.0 and confident=true — no threshold, no ambiguity.
+ */
+export async function detectRepoFromGitHubUrl(opts: {
+  pairs: { role: string; content: string }[];
+  teamId: string;
+}): Promise<DetectedRepo | null> {
+  const { pairs, teamId } = opts;
+  const admin = createAdminClient();
+
+  // Collect all text from the conversation
+  const fullText = pairs.map((p) => p.content).join("\n");
+  const slugs = extractGitHubSlugs(fullText);
+  if (slugs.length === 0) return null;
+
+  // Try each slug — first match wins
+  for (const slug of slugs) {
+    const match = await findProjectForRepo(admin, teamId, slug);
+    if (match) {
+      console.log(
+        `[repo-detector] URL mention → "${match.repoFullName}" (slug: ${slug})`
+      );
+      return {
+        ...match,
+        score: 1.0,
+        confident: true,
+        method: "url_mention",
+      };
+    }
+  }
+
+  return null;
+}
+
+// ── Tier 2: Semantic chunk similarity ────────────────────────────────────────
 
 export async function detectRepoFromConversation(opts: {
   embedding: number[];
@@ -101,27 +195,32 @@ export async function detectRepoFromConversation(opts: {
       .maybeSingle();
 
     if (!project) {
-      // Repo is indexed but no project workspace linked yet — skip routing,
-      // let the existing clustering fallback create one.
+      // Repo is indexed but no project workspace linked yet
       return null;
     }
 
-    // Get repo full name for display
+    // Get repo info for display — use correct column name: repo_full_name
     const { data: repo } = await admin
       .from("github_repos")
-      .select("id, full_name")
+      .select("id, repo_full_name")
       .eq("id", winner.repoId)
       .maybeSingle();
 
     if (!repo) return null;
 
+    console.log(
+      `[repo-detector] semantic → "${repo.repo_full_name}" ` +
+        `score=${winner.score.toFixed(3)} confident=${confident}`
+    );
+
     return {
       projectId: project.id,
       projectName: project.name,
       repoId: repo.id,
-      repoFullName: repo.full_name,
+      repoFullName: repo.repo_full_name,
       score: winner.score,
       confident,
+      method: "semantic",
     };
   } catch (err) {
     console.warn("[repo-detector] unexpected error:", err);

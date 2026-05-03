@@ -50,6 +50,16 @@
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/(app)/settings/page.js"
+    ],
+    "/(app)/settings/extension/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(app)/settings/extension/page.js"
+    ],
+    "/(app)/context/[id]/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(app)/context/[id]/page.js"
     ]
   }
 }

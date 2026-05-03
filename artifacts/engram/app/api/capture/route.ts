@@ -8,7 +8,11 @@ import { ensureUserTeam } from "@/lib/team";
 import { hashConversation, hashConversationIdentity } from "@/lib/hash";
 import { buildSnapshotEmbeddingInput, embedText } from "@/lib/embeddings";
 import { assignSnapshotToProject } from "@/lib/clustering";
-import { detectRepoFromConversation, DetectedRepo } from "@/lib/repo-detector";
+import {
+  detectRepoFromGitHubUrl,
+  detectRepoFromConversation,
+  DetectedRepo,
+} from "@/lib/repo-detector";
 
 export function OPTIONS(request: NextRequest) {
   return corsOptions(request);
@@ -390,15 +394,36 @@ Call the save_handoff_brief tool with the structured result.`,
     );
   }
 
-  // ----- Semantic repo detection (runs in parallel with author lookup) -----
-  // This is the "Content Wins" router: match the conversation against every
-  // indexed repo's code chunks. The highest-scoring repo's project wins.
-  // No tab detection — purely content-driven, handles unlimited open tabs.
+  // ----- Repo routing: three-tier cascade ─────────────────────────────────
+  // Tier 1: GitHub URL mention (no embedding needed, 100% confidence).
+  //   If the conversation contains github.com/owner/repo matching an indexed
+  //   repo, route there immediately. Handles "paste repo link, ask about it".
+  // Tier 2: Semantic chunk similarity (embedding required, score > 0.35).
+  //   Match conversation embedding against ALL indexed repo code chunks.
+  //   Purely content-driven — works regardless of how many tabs are open.
+  // Tier 3: Centroid clustering fallback (fire-and-forget, handled below).
   let detectedRepo: DetectedRepo | null = null;
   let authorHandle: string | null = null;
 
+  // Tier 1 — URL detection runs before embedding (fast, no API cost).
+  try {
+    detectedRepo = await detectRepoFromGitHubUrl({
+      pairs,
+      teamId: resolvedTeamId,
+    });
+    if (detectedRepo) {
+      console.log(
+        `[capture] URL routing → project "${detectedRepo.projectName}" ` +
+          `(${detectedRepo.repoFullName}) method=url_mention`
+      );
+    }
+  } catch (e) {
+    console.warn("[capture] URL detection failed:", e);
+  }
+
+  // Tier 2 — Semantic detection + author lookup in parallel (only if Tier 1 missed).
   const [detectionResult, authorResult] = await Promise.allSettled([
-    embeddingVec
+    !detectedRepo && embeddingVec
       ? detectRepoFromConversation({
           embedding: embeddingVec,
           teamId: resolvedTeamId,
@@ -413,7 +438,7 @@ Call the save_handoff_brief tool with the structured result.`,
       : Promise.resolve(null),
   ]);
 
-  if (detectionResult.status === "fulfilled") {
+  if (!detectedRepo && detectionResult.status === "fulfilled") {
     detectedRepo = detectionResult.value;
     if (detectedRepo) {
       console.log(
@@ -422,8 +447,8 @@ Call the save_handoff_brief tool with the structured result.`,
           `confident=${detectedRepo.confident}`
       );
     }
-  } else {
-    console.warn("[capture] repo detection failed:", detectionResult.reason);
+  } else if (!detectedRepo && detectionResult.status === "rejected") {
+    console.warn("[capture] semantic detection failed:", detectionResult.reason);
   }
 
   if (authorResult.status === "fulfilled" && authorResult.value) {
