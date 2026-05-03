@@ -90,7 +90,11 @@ export default function TeamPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed");
-      setNewInviteUrl(data.url);
+      // Always rebuild from window.location.origin — the browser knows the
+      // real public URL, even if the server header detection ever fails.
+      const code = data?.invite?.code;
+      const url = code ? `${window.location.origin}/team/join/${code}` : data.url;
+      setNewInviteUrl(url);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create invite");

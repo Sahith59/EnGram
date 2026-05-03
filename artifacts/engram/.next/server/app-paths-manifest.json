@@ -1,9 +1,9 @@
 {
+  "/api/team/route": "app/api/team/route.js",
+  "/api/team/invites/route": "app/api/team/invites/route.js",
   "/api/capture/route": "app/api/capture/route.js",
-  "/api/team/invite/route": "app/api/team/invite/route.js",
-  "/api/team/join/route": "app/api/team/join/route.js",
-  "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
-  "/(app)/team/page": "app/(app)/team/page.js",
   "/(app)/settings/page": "app/(app)/settings/page.js",
-  "/(app)/digest/page": "app/(app)/digest/page.js"
+  "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
+  "/(app)/digest/page": "app/(app)/digest/page.js",
+  "/(app)/team/page": "app/(app)/team/page.js"
 }

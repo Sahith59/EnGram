@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { generateInviteCode } from "@/lib/invites";
+import { getPublicOrigin } from "@/lib/origin";
 
 /**
  * POST /api/team/invite
@@ -69,7 +70,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Failed to create invite" }, { status: 500 });
   }
 
-  const origin = req.nextUrl.origin;
+  const origin = getPublicOrigin(req);
   return NextResponse.json({
     invite,
     url: `${origin}/team/join/${invite.code}`,
