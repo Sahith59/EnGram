@@ -14,7 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 
 type Scope = "personal" | "team";
-type GroupBy = "project" | "tag" | "tool" | "none";
+type GroupBy = "project" | "tag" | "tool" | "month" | "week" | "none";
 
 interface DigestResponse {
   markdown: string;
@@ -26,6 +26,8 @@ interface DigestResponse {
   tool: string | null;
   total: number;
   buckets: { label: string; count: number }[];
+  isDegenerate?: boolean;
+  degenerateReason?: string | null;
   generated_at: string;
   error?: string;
 }
@@ -198,20 +200,22 @@ export default function DigestPage() {
 
           <Section title="Group by">
             <div className="grid grid-cols-2 gap-1">
-              {(["project", "tag", "tool", "none"] as GroupBy[]).map((g) => (
-                <button
-                  key={g}
-                  onClick={() => setGroupBy(g)}
-                  className={cn(
-                    "px-2 py-1.5 rounded-md text-xs capitalize transition-colors border",
-                    groupBy === g
-                      ? "bg-engram/10 text-engram-light border-engram/30"
-                      : "text-gh-muted hover:text-gh-text border-gh-border hover:bg-gh-canvas"
-                  )}
-                >
-                  {g}
-                </button>
-              ))}
+              {(["project", "tag", "tool", "month", "week", "none"] as GroupBy[]).map(
+                (g) => (
+                  <button
+                    key={g}
+                    onClick={() => setGroupBy(g)}
+                    className={cn(
+                      "px-2 py-1.5 rounded-md text-xs capitalize transition-colors border",
+                      groupBy === g
+                        ? "bg-engram/10 text-engram-light border-engram/30"
+                        : "text-gh-muted hover:text-gh-text border-gh-border hover:bg-gh-canvas"
+                    )}
+                  >
+                    {g}
+                  </button>
+                )
+              )}
             </div>
           </Section>
 
@@ -251,8 +255,65 @@ export default function DigestPage() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.18 }}
-                className="rounded-lg border border-gh-border bg-gh-bg overflow-hidden"
+                className="space-y-3"
               >
+                {/* Bucket distribution chips — visible proof grouping was applied */}
+                {result.total > 0 && result.groupBy !== "none" && (
+                  <div className="rounded-md border border-gh-border bg-gh-canvas px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wider text-gh-muted/70 mb-1.5">
+                      Distribution · {result.buckets.length} bucket
+                      {result.buckets.length === 1 ? "" : "s"}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {result.buckets.slice(0, 16).map((b) => (
+                        <span
+                          key={b.label}
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] bg-gh-bg border border-gh-border"
+                        >
+                          <span className="text-gh-muted truncate max-w-[180px]">
+                            {b.label}
+                          </span>
+                          <span className="text-engram-light font-mono">
+                            {b.count}
+                          </span>
+                        </span>
+                      ))}
+                      {result.buckets.length > 16 && (
+                        <span className="text-[11px] text-gh-muted px-1">
+                          +{result.buckets.length - 16} more
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Degenerate-grouping warning — be honest with the user */}
+                {result.isDegenerate && result.degenerateReason && (
+                  <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-200/90">
+                    <div className="font-medium mb-0.5">
+                      This grouping isn&apos;t adding value on your data.
+                    </div>
+                    <div className="text-yellow-200/70">
+                      {result.degenerateReason} Try{" "}
+                      <button
+                        onClick={() => setGroupBy("month")}
+                        className="underline hover:text-yellow-100"
+                      >
+                        Month
+                      </button>{" "}
+                      or{" "}
+                      <button
+                        onClick={() => setGroupBy("week")}
+                        className="underline hover:text-yellow-100"
+                      >
+                        Week
+                      </button>{" "}
+                      — those work on any capture with a date.
+                    </div>
+                  </div>
+                )}
+
+                <div className="rounded-lg border border-gh-border bg-gh-bg overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-2.5 border-b border-gh-border bg-gh-canvas">
                   <div className="flex items-center gap-3">
                     <span className="text-xs text-gh-muted font-mono">
@@ -293,6 +354,7 @@ export default function DigestPage() {
                 >
                   {result.markdown}
                 </pre>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>

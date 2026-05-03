@@ -77,8 +77,12 @@ export async function GET(request: NextRequest) {
     | "project"
     | "tag"
     | "tool"
+    | "month"
+    | "week"
     | "none";
-  const validGroupBy = ["project", "tag", "tool", "none"].includes(groupBy)
+  const validGroupBy = ["project", "tag", "tool", "month", "week", "none"].includes(
+    groupBy
+  )
     ? groupBy
     : "project";
 
@@ -161,6 +165,10 @@ export async function GET(request: NextRequest) {
       pushTo(r.project?.trim() || "(no project)", r);
     } else if (validGroupBy === "tool") {
       pushTo(toolLabel(r.ai_tool), r);
+    } else if (validGroupBy === "month") {
+      pushTo(monthLabel(r.created_at), r);
+    } else if (validGroupBy === "week") {
+      pushTo(weekLabel(r.created_at), r);
     } else if (validGroupBy === "tag") {
       const tags = (r.tags ?? []).filter(Boolean);
       if (tags.length === 0) {
@@ -171,13 +179,33 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // Sort buckets: empty/(no project)/(untagged) buckets last, otherwise alpha.
-  buckets.sort((a, b) => {
-    const aLast = a.label.startsWith("(");
-    const bLast = b.label.startsWith("(");
-    if (aLast !== bLast) return aLast ? 1 : -1;
-    return a.label.localeCompare(b.label);
-  });
+  // Sort buckets: month/week chronologically desc; others alpha with
+  // (parenthesized) buckets last.
+  if (validGroupBy === "month" || validGroupBy === "week") {
+    buckets.sort((a, b) => b.label.localeCompare(a.label));
+  } else {
+    buckets.sort((a, b) => {
+      const aLast = a.label.startsWith("(");
+      const bLast = b.label.startsWith("(");
+      if (aLast !== bLast) return aLast ? 1 : -1;
+      return a.label.localeCompare(b.label);
+    });
+  }
+
+  // Diagnostics: tell the caller whether this grouping actually
+  // separates the data, so the UI can warn on degenerate groupings.
+  const distribution = buckets.map((b) => ({ label: b.label, count: b.rows.length }));
+  const isDegenerate =
+    rows.length > 1 &&
+    (buckets.length === 1 || buckets.length === rows.length);
+  let degenerateReason: string | null = null;
+  if (isDegenerate) {
+    if (buckets.length === 1) {
+      degenerateReason = `All ${rows.length} decisions fall into a single bucket (${buckets[0].label}). This grouping doesn't separate your data.`;
+    } else {
+      degenerateReason = `Each decision is in its own bucket — this grouping over-fragments your data.`;
+    }
+  }
 
   const md = renderMarkdown({
     fromDate,
@@ -201,7 +229,9 @@ export async function GET(request: NextRequest) {
       groupBy: validGroupBy,
       tool: toolFilter ?? null,
       total: rows.length,
-      buckets: buckets.map((b) => ({ label: b.label, count: b.rows.length })),
+      buckets: distribution,
+      isDegenerate,
+      degenerateReason,
       generated_at: new Date().toISOString(),
     });
   }
@@ -220,6 +250,21 @@ function ymd(d: Date): string {
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function monthLabel(iso: string): string {
+  // "2026-05-03T..." → "2026-05"
+  return iso.slice(0, 7);
+}
+
+function weekLabel(iso: string): string {
+  // ISO week format "YYYY-Www". Standard Monday-start week.
+  const d = new Date(iso);
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
 function toolLabel(t: string): string {
@@ -250,7 +295,7 @@ function renderMarkdown(args: {
   fromDate: string;
   toDate: string;
   scope: "personal" | "team";
-  groupBy: "project" | "tag" | "tool" | "none";
+  groupBy: "project" | "tag" | "tool" | "month" | "week" | "none";
   toolFilter: string | null;
   totalDecisions: number;
   buckets: { label: string; rows: Array<{
@@ -282,6 +327,14 @@ function renderMarkdown(args: {
   lines.push(`**Grouped by:** ${groupBy}  `);
   if (toolFilter) lines.push(`**Tool filter:** ${toolLabel(toolFilter)}  `);
   lines.push(`**Total decisions:** ${totalDecisions}  `);
+  if (totalDecisions > 0 && groupBy !== "none") {
+    const top = buckets
+      .slice(0, 8)
+      .map((b) => `${b.label} (${b.rows.length})`)
+      .join(" · ");
+    const more = buckets.length > 8 ? ` · +${buckets.length - 8} more` : "";
+    lines.push(`**Distribution (${buckets.length} bucket${buckets.length === 1 ? "" : "s"}):** ${top}${more}  `);
+  }
   lines.push(`**Generated:** ${new Date().toISOString()}`);
   lines.push("");
 
