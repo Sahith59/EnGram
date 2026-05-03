@@ -99,25 +99,25 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ----- Dedup logic (two-tier) -----
-  // 1. content_hash: exact-match → no-op (no LLM call, no DB write)
-  // 2. identity_hash: same conversation, more content → UPDATE in place
-  //
-  // identity_hash is the hash of the first 1-2 messages, which doesn't
-  // change as the conversation grows. This collapses follow-up captures
-  // into the same row instead of creating duplicates.
+  // ----- Dedup logic (two-tier, gracefully degrades if migration not applied) -----
   const contentHash = hashConversation(pairs);
   const identityHash = hashConversationIdentity(pairs);
 
   // Tier 1: exact content match → return as-is, zero work
-  const { data: exact } = await admin
-    .from("context_snapshots")
-    .select("id, title, summary")
-    .eq("team_id", resolvedTeamId)
-    .eq("content_hash", contentHash)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  let exact: { id: string; title: string; summary: string | null } | null = null;
+  try {
+    const r = await admin
+      .from("context_snapshots")
+      .select("id, title, summary")
+      .eq("team_id", resolvedTeamId)
+      .eq("content_hash", contentHash)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    exact = r.data;
+  } catch {
+    // Column probably doesn't exist — migration not applied. Skip tier 1.
+  }
 
   if (exact) {
     return withCors(
@@ -137,14 +137,26 @@ export async function POST(request: NextRequest) {
   }
 
   // Tier 2: same conversation identity, possibly grown
-  const { data: sibling } = await admin
-    .from("context_snapshots")
-    .select("id, title, summary, raw_conversation, created_at")
-    .eq("team_id", resolvedTeamId)
-    .eq("identity_hash", identityHash)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  let sibling: {
+    id: string;
+    title: string;
+    summary: string | null;
+    raw_conversation: unknown;
+    created_at: string;
+  } | null = null;
+  try {
+    const r = await admin
+      .from("context_snapshots")
+      .select("id, title, summary, raw_conversation, created_at")
+      .eq("team_id", resolvedTeamId)
+      .eq("identity_hash", identityHash)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    sibling = r.data as typeof sibling;
+  } catch {
+    // identity_hash column doesn't exist — skip tier 2 dedup.
+  }
 
   const willUpdateExisting = !!sibling;
   if (sibling) {
@@ -152,7 +164,6 @@ export async function POST(request: NextRequest) {
       ? sibling.raw_conversation.length
       : 0;
     if (oldPairCount >= pairs.length) {
-      // Existing has equal-or-more content — return it, don't downgrade
       return withCors(
         NextResponse.json(
           {
@@ -168,7 +179,6 @@ export async function POST(request: NextRequest) {
         request
       );
     }
-    // Otherwise we'll re-run Claude on the full longer content and UPDATE.
   }
 
   // ----- Summarize via Claude -----
@@ -185,89 +195,114 @@ export async function POST(request: NextRequest) {
     context_md: string;
   };
 
+  // Use tool_use to GUARANTEE structurally valid output. Anthropic enforces
+  // the schema on the model side, so we never hit JSON.parse errors from
+  // unescaped quotes, code fences, or truncated strings.
   try {
     const message = await anthropic.messages.create({
       model: "claude-haiku-4-5",
-      max_tokens: 8192,
+      max_tokens: 16384,
+      tools: [
+        {
+          name: "save_handoff_brief",
+          description:
+            "Save the structured handoff brief that captures everything another AI needs to continue this project without hallucinating.",
+          input_schema: {
+            type: "object",
+            properties: {
+              title: {
+                type: "string",
+                description:
+                  "Concise project title, max 80 chars. What is this conversation actually about?",
+              },
+              summary: {
+                type: "string",
+                description: "2-4 sentence executive summary of the conversation.",
+              },
+              key_decisions: {
+                type: "string",
+                description:
+                  "Paragraph listing every concrete decision made and WHY. Quote verbatim where precision matters. If none, write 'None.'",
+              },
+              technologies: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Every named tool, framework, library, language, service, or product mentioned.",
+              },
+              context_md: {
+                type: "string",
+                description:
+                  "The full handoff brief in markdown. MUST follow this structure exactly with all 10 sections (use '_None._' for empty ones):\n\n# <Project Title>\n\n## 1. Project Goal\n## 2. Current State\n## 3. Key Decisions & Rationale\n## 4. Code, Schemas, & Artifacts (verbatim, fenced code blocks)\n## 5. Constraints & Non-Goals\n## 6. Open Questions / Unresolved\n## 7. Immediate Next Steps\n## 8. Verbatim Tail (last 2-3 exchanges, quoted)\n## 9. Glossary\n## 10. Verification Checkpoint (3-5 facts the next AI must echo back)",
+              },
+            },
+            required: [
+              "title",
+              "summary",
+              "key_decisions",
+              "technologies",
+              "context_md",
+            ],
+          },
+        },
+      ],
+      tool_choice: { type: "tool", name: "save_handoff_brief" },
       messages: [
         {
           role: "user",
-          content: `You are ENGRAM, a context-engineering system. Your job is to produce a HANDOFF BRIEF that another AI (Claude, ChatGPT, Gemini) can use to continue this project from a cold start WITHOUT hallucinating.
+          content: `You are ENGRAM, a context-engineering system. Produce a HANDOFF BRIEF another AI can use to continue this project from a cold start WITHOUT hallucinating.
 
 CRITICAL RULES:
-1. NEVER invent facts. If something isn't in the conversation, omit it.
-2. Quote verbatim where precision matters (code, file paths, names, exact requirements, error messages).
+1. NEVER invent facts. If something isn't in the conversation, write 'Not specified' or '_None._' for that section.
+2. Quote verbatim where precision matters: code, file paths, names, exact requirements, error messages.
 3. Preserve all code blocks exactly as written, in fenced code blocks with language tags.
 4. Capture intent and constraints, not just what was done.
-
-Return ONLY valid JSON (no commentary, no markdown fences) with these fields:
-- title: string (concise, max 80 chars — what is this project actually about?)
-- summary: string (2-4 sentence executive summary)
-- key_decisions: string (paragraph listing the concrete decisions made and WHY)
-- technologies: string[] (every named tool, framework, library, language, service)
-- context_md: string (the full handoff brief — markdown, can be long, structured as below)
-
-The context_md MUST follow this structure:
-
-# <Project Title>
-
-## 1. Project Goal
-What is the user actually trying to build/decide/solve? In their own words where possible.
-
-## 2. Current State
-What has been built/decided/agreed so far? Be concrete.
-
-## 3. Key Decisions & Rationale
-Numbered list. Each decision: what was chosen, what alternatives were rejected, why.
-
-## 4. Code, Schemas, & Artifacts
-All code blocks, SQL, configs, file structures discussed — verbatim. Use fenced blocks with language tags. If long, include the most recent/relevant version.
-
-## 5. Constraints & Non-Goals
-Hard requirements, things explicitly ruled out, dependencies, deadlines.
-
-## 6. Open Questions / Unresolved
-Anything left dangling, blocked, or pending the user's decision.
-
-## 7. Immediate Next Steps
-What was the user about to do next? What were they asking when this snapshot was taken?
-
-## 8. Verbatim Tail
-The last 2-3 exchanges, verbatim, so the receiving AI has ground-truth recent context. Use:
-> **USER:** ...
-> **ASSISTANT:** ...
-
-## 9. Glossary
-Project-specific terms, codenames, custom abbreviations the user has used.
-
-## 10. Verification Checkpoint
-3-5 specific facts the receiving AI MUST acknowledge before generating new work, e.g. "Confirm the database is Postgres with pgvector enabled" — these prevent silent drift.
-
-If a section has no content, write "_None._" — do not omit the section.
+5. The context_md must contain ALL 10 sections defined in the tool schema, in order.
 
 CONVERSATION TO ANALYZE:
 ${conversationText}
 
 Source URL: ${url || "unknown"}
-Captured: ${new Date().toISOString()}`,
+Captured: ${new Date().toISOString()}
+
+Call the save_handoff_brief tool with the structured result.`,
         },
       ],
     });
 
-    const rawText =
-      message.content[0].type === "text" ? message.content[0].text : "{}";
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    extraction = JSON.parse(jsonMatch ? jsonMatch[0] : rawText);
+    const toolUse = message.content.find((b) => b.type === "tool_use");
+    if (!toolUse || toolUse.type !== "tool_use") {
+      throw new Error("Model did not return a tool_use block");
+    }
+    extraction = toolUse.input as typeof extraction;
+    // Defensive defaults — schema requires fields, but be safe
+    extraction.title = extraction.title || "Untitled conversation";
+    extraction.summary = extraction.summary || "";
+    extraction.key_decisions = extraction.key_decisions || "";
+    extraction.technologies = Array.isArray(extraction.technologies)
+      ? extraction.technologies
+      : [];
+    extraction.context_md = extraction.context_md || "";
   } catch (err) {
     console.error("Claude extraction failed:", err);
     return withCors(
-      NextResponse.json({ error: "AI extraction failed" }, { status: 500 }),
+      NextResponse.json(
+        {
+          error: "AI extraction failed",
+          detail: err instanceof Error ? err.message : String(err),
+        },
+        { status: 500 }
+      ),
       request
     );
   }
 
   // ----- Persist: UPDATE existing sibling, or INSERT new -----
-  const payload = {
+  // Build payload with the optional dedup columns. If the migration hasn't
+  // been applied to the DB, the columns won't exist and Supabase will return
+  // PGRST204 — we then strip them and retry. This makes the system work
+  // out-of-the-box without forcing the user to run SQL.
+  const corePayload = {
     team_id: resolvedTeamId,
     created_by: userId,
     title: extraction.title ?? "Untitled",
@@ -277,20 +312,48 @@ Captured: ${new Date().toISOString()}`,
     tags: extraction.technologies ?? [],
     decision: extraction.key_decisions ?? null,
     rationale: extraction.context_md ?? null,
+  };
+  const optionalDedupFields = {
     content_hash: contentHash,
     identity_hash: identityHash,
     source_url: url ?? null,
   };
 
-  if (willUpdateExisting && sibling) {
-    const { data: updated, error: updateError } = await admin
-      .from("context_snapshots")
-      .update({ ...payload, updated_at: new Date().toISOString() })
-      .eq("id", sibling.id)
-      .select("id, title, summary")
-      .single();
+  /**
+   * Try a Supabase write with the optional dedup columns. If Supabase reports
+   * PGRST204 (column missing), retry once without them.
+   */
+  async function writeWithFallback(
+    op: (extra: Record<string, unknown>) => Promise<{
+      data: { id: string; title: string; summary: string | null } | null;
+      error: { code?: string; message?: string } | null;
+    }>
+  ) {
+    const first = await op(optionalDedupFields);
+    if (first.error?.code === "PGRST204") {
+      console.warn(
+        "[capture] Optional dedup columns missing — falling back. Apply migration 0003_conversation_identity.sql to enable proper dedup."
+      );
+      return op({});
+    }
+    return first;
+  }
 
-    if (updateError) {
+  if (willUpdateExisting && sibling) {
+    const { data: updated, error: updateError } = await writeWithFallback(
+      (extra) =>
+        admin
+          .from("context_snapshots")
+          .update({ ...corePayload, ...extra, updated_at: new Date().toISOString() })
+          .eq("id", sibling!.id)
+          .select("id, title, summary")
+          .single() as unknown as Promise<{
+          data: { id: string; title: string; summary: string | null } | null;
+          error: { code?: string; message?: string } | null;
+        }>
+    );
+
+    if (updateError || !updated) {
       console.error("DB update failed:", updateError);
       return withCors(
         NextResponse.json({ error: "Failed to update snapshot" }, { status: 500 }),
@@ -314,13 +377,19 @@ Captured: ${new Date().toISOString()}`,
     );
   }
 
-  const { data: snapshot, error: insertError } = await admin
-    .from("context_snapshots")
-    .insert(payload)
-    .select("id, title, summary")
-    .single();
+  const { data: snapshot, error: insertError } = await writeWithFallback(
+    (extra) =>
+      admin
+        .from("context_snapshots")
+        .insert({ ...corePayload, ...extra })
+        .select("id, title, summary")
+        .single() as unknown as Promise<{
+        data: { id: string; title: string; summary: string | null } | null;
+        error: { code?: string; message?: string } | null;
+      }>
+  );
 
-  if (insertError) {
+  if (insertError || !snapshot) {
     console.error("DB insert failed:", insertError);
     return withCors(
       NextResponse.json({ error: "Failed to save snapshot" }, { status: 500 }),

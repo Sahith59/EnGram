@@ -1,10 +1,8 @@
 {
-  "/api/contexts/route": "app/api/contexts/route.js",
-  "/api/contexts/[id]/export/route": "app/api/contexts/[id]/export/route.js",
   "/api/capture/route": "app/api/capture/route.js",
   "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
   "/(app)/settings/extension/page": "app/(app)/settings/extension/page.js",
-  "/(app)/context/[id]/page": "app/(app)/context/[id]/page.js",
   "/(app)/resume/page": "app/(app)/resume/page.js",
-  "/(app)/team/page": "app/(app)/team/page.js"
+  "/(app)/team/page": "app/(app)/team/page.js",
+  "/(app)/context/[id]/page": "app/(app)/context/[id]/page.js"
 }
