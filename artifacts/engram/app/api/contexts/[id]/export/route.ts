@@ -47,26 +47,53 @@ export async function GET(
   // RLS will already block disallowed rows (personal rows you don't own;
   // team rows from a different team) but we re-check application-side so we
   // can branch on visibility for redaction.
-  const { data, error } = await supabase
-    .from("context_snapshots")
-    .select(
-      "title, rationale, summary, decision, tags, ai_tool, created_at, raw_conversation, created_by, team_id, visibility"
-    )
-    .eq("id", params.id)
-    .single();
-
-  if (error || !data) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-
-  const row = data as typeof data & {
+  // NOTE: `visibility` column is optional — migrations 0003/0004 may not yet
+  // be applied. Probe with a graceful fallback so the route stays robust.
+  type SnapshotRow = {
+    title: string | null;
+    rationale: string | null;
+    summary: string | null;
+    decision: string | null;
+    tags: string[] | null;
+    ai_tool: string;
+    created_at: string;
+    raw_conversation: { role: string; content: string }[] | null;
     created_by: string;
     team_id: string;
     visibility?: string | null;
   };
-  const visibility = (row.visibility as string | undefined) ?? "personal";
-  const isCreator = row.created_by === user.id;
-  const isSameTeam = row.team_id === profile.team_id;
+  const baseCols =
+    "title, rationale, summary, decision, tags, ai_tool, created_at, raw_conversation, created_by, team_id";
+
+  let row: SnapshotRow | null = null;
+  {
+    const { data, error } = await supabase
+      .from("context_snapshots")
+      .select(`${baseCols}, visibility`)
+      .eq("id", params.id)
+      .single();
+    if (data) {
+      row = data as unknown as SnapshotRow;
+    } else if (error?.code === "42703") {
+      const fb = await supabase
+        .from("context_snapshots")
+        .select(baseCols)
+        .eq("id", params.id)
+        .single();
+      if (fb.data) {
+        row = { ...(fb.data as unknown as Omit<SnapshotRow, "visibility">), visibility: null };
+      }
+    }
+  }
+
+  if (!row) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  const safeRow: SnapshotRow = row;
+
+  const visibility = safeRow.visibility ?? "personal";
+  const isCreator = safeRow.created_by === user.id;
+  const isSameTeam = safeRow.team_id === profile.team_id;
 
   // Defensive auth checks (RLS should already prevent these)
   if (visibility === "personal" && !isCreator) {
@@ -82,29 +109,29 @@ export async function GET(
   // Raw transcripts NEVER leave the author's hands when the row is shared.
   const canSeeRaw = isCreator;
 
-  const titleSafe = (row.title ?? "untitled").toString();
-  const tagsArr = (row.tags as string[] | null) ?? [];
+  const titleSafe = (safeRow.title ?? "untitled").toString();
+  const tagsArr = (safeRow.tags as string[] | null) ?? [];
 
   const brief =
-    row.rationale ??
+    safeRow.rationale ??
     `# ${titleSafe}
 
 ## Summary
-${row.summary ?? "_No summary available._"}
+${safeRow.summary ?? "_No summary available._"}
 
 ## Key Decisions
-${row.decision ?? "_No decisions recorded._"}
+${safeRow.decision ?? "_No decisions recorded._"}
 
 ## Technologies
 ${tagsArr.length > 0 ? tagsArr.map((t) => `- ${t}`).join("\n") : "_None identified._"}
 
 ---
-*Captured from ${row.ai_tool} on ${new Date(row.created_at).toLocaleDateString()}*
+*Captured from ${safeRow.ai_tool} on ${new Date(safeRow.created_at).toLocaleDateString()}*
 `;
 
   function buildHandoffPrompt() {
     const rawPairs =
-      (row.raw_conversation as { role: string; content: string }[] | null) ?? [];
+      (safeRow.raw_conversation as { role: string; content: string }[] | null) ?? [];
     const tail = canSeeRaw
       ? rawPairs
           .slice(-4)
@@ -135,7 +162,7 @@ _Redacted — the verbatim transcript stays private to the original author of th
 
     return `# 🔁 ENGRAM Project Handoff
 
-I'm resuming a project that was previously discussed in **${row.ai_tool}**. The full handoff brief is below. Your job is to **pick up exactly where we left off without hallucinating or inventing details**.
+I'm resuming a project that was previously discussed in **${safeRow.ai_tool}**. The full handoff brief is below. Your job is to **pick up exactly where we left off without hallucinating or inventing details**.
 
 ## ✋ READ THIS FIRST — Receiving AI Instructions
 
@@ -151,7 +178,7 @@ ${brief}
 
 ---
 
-${verbatimSection}*Handoff prepared by ENGRAM · captured ${new Date(row.created_at).toLocaleString()} · target: ${targetTool}*
+${verbatimSection}*Handoff prepared by ENGRAM · captured ${new Date(safeRow.created_at).toLocaleString()} · target: ${targetTool}*
 `;
   }
 
@@ -171,7 +198,7 @@ ${verbatimSection}*Handoff prepared by ENGRAM · captured ${new Date(row.created
       );
     }
     const rawPairs =
-      (row.raw_conversation as { role: string; content: string }[] | null) ?? [];
+      (safeRow.raw_conversation as { role: string; content: string }[] | null) ?? [];
     body =
       `# ${titleSafe} — Raw Transcript\n\n` +
       rawPairs
