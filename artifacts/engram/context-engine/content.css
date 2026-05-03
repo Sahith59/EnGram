@@ -84,23 +84,23 @@
    overflow:hidden clipping in the platform's layout.
    ============================================================ */
 
-/* Button wrap — hidden by default, shown via JS on hover */
+/* Button wrap — always visible at low opacity, full opacity on hover/open */
 .engram-save-wrap {
-  display: inline-flex;
-  align-items: center;
-  margin-top: 10px;
-  opacity: 0;
-  pointer-events: none;
+  display: block;
+  margin-top: 8px;
+  margin-bottom: 4px;
+  opacity: 0.45;
+  pointer-events: auto;
   transition: opacity 0.18s ease;
-  /* Keep stacking context local to avoid interfering with page layout */
   position: relative;
-  z-index: 1;
+  z-index: 9999;
+  /* Ensure it is never clipped by the host page */
+  overflow: visible;
 }
 
-/* Visible when hovered (set by JS) or while saving/open */
+.engram-save-wrap:hover,
 .engram-save-wrap.engram-open {
   opacity: 1 !important;
-  pointer-events: auto !important;
 }
 
 /* ---- Trigger pill button ---- */

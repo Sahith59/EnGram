@@ -379,27 +379,48 @@
   }
 
   // Returns ordered list of {el, role} for all messages in DOM order.
-  // Tries multiple selector strategies per platform.
+  // Uses a multi-strategy cascade per platform so DOM changes are handled.
   function gatherMessageEls() {
     const result = [];
 
     if (TOOL === "chatgpt") {
-      // ChatGPT uses article[data-message-author-role] — stable since 2023
+      // Strategy 1: data-message-author-role attribute (stable since 2023)
       const ASEL = '[data-message-author-role="assistant"]';
       const USEL = '[data-message-author-role="user"]';
-      document.querySelectorAll(`${ASEL}, ${USEL}`).forEach((el) => {
-        result.push({ el, role: el.matches(ASEL) ? "assistant" : "user" });
-      });
+      const byAttr = document.querySelectorAll(`${ASEL}, ${USEL}`);
+      if (byAttr.length > 0) {
+        byAttr.forEach((el) =>
+          result.push({ el, role: el.matches(ASEL) ? "assistant" : "user" })
+        );
+      } else {
+        // Strategy 2: article elements each containing a role attribute
+        document.querySelectorAll("article").forEach((art) => {
+          const roleEl = art.querySelector("[data-message-author-role]");
+          if (roleEl) {
+            const r = roleEl.getAttribute("data-message-author-role");
+            result.push({ el: roleEl, role: r === "assistant" ? "assistant" : "user" });
+          }
+        });
+      }
+      // Strategy 3: last-resort data-testid scan
+      if (result.length === 0) {
+        document.querySelectorAll('[data-testid*="conversation-turn"]').forEach((el) => {
+          const inner = el.querySelector("[data-message-author-role]");
+          if (inner) {
+            const r = inner.getAttribute("data-message-author-role");
+            result.push({ el: inner, role: r === "assistant" ? "assistant" : "user" });
+          }
+        });
+      }
     }
 
     if (TOOL === "claude") {
-      // Primary: data-testid containing "human" or "assistant"
+      // Strategy 1: data-testid containing "human" or "assistant"
       document.querySelectorAll("[data-testid^='message']").forEach((el) => {
         const tid = el.getAttribute("data-testid") || "";
-        if (tid.includes("human"))          result.push({ el, role: "user" });
-        else if (!tid.includes("human"))    result.push({ el, role: "assistant" });
+        result.push({ el, role: tid.includes("human") ? "user" : "assistant" });
       });
-      // Fallback: class-based selectors
+      // Strategy 2: class-based selectors
       if (result.length === 0) {
         document.querySelectorAll(".font-claude-message, .font-user-message").forEach((el) => {
           result.push({
@@ -408,18 +429,35 @@
           });
         });
       }
+      // Strategy 3: generic article/section scan
+      if (result.length === 0) {
+        document.querySelectorAll("article, [class*='message']").forEach((el) => {
+          // Skip elements that are children of already-found elements
+          const text = el.innerText?.trim();
+          if (text && text.length > 10) result.push({ el, role: "assistant" });
+        });
+      }
     }
 
     if (TOOL === "gemini") {
-      // Gemini uses custom elements — very stable
+      // Strategy 1: Gemini custom elements — very stable
       document.querySelectorAll("user-query, model-response").forEach((el) => {
         result.push({
           el,
           role: el.tagName.toLowerCase() === "user-query" ? "user" : "assistant",
         });
       });
+      // Strategy 2: data-testid for newer Gemini versions
+      if (result.length === 0) {
+        document.querySelectorAll("[data-testid='user-query'], [data-testid='model-response']")
+          .forEach((el) => {
+            const r = el.getAttribute("data-testid");
+            result.push({ el, role: r === "user-query" ? "user" : "assistant" });
+          });
+      }
     }
 
+    console.log(`[engram] gatherMessageEls: ${result.length} elements on ${TOOL}`);
     return result;
   }
 
@@ -589,12 +627,16 @@
     }
   }
 
-  // Build and attach the pill button + hover wiring for one assistant element
+  // Build and attach the pill button for one assistant element.
+  // Injection strategy: find the prose/markdown container inside the element,
+  // then insert the button wrap RIGHT AFTER it as a sibling. This avoids
+  // being clipped by overflow:hidden on the root message container and puts
+  // the button in the natural reading flow below the response text.
   function attachSaveButton(assistantEl, userText, assistantText) {
     // Mark before touching DOM to prevent double-inject
     assistantEl.dataset.engramBtn = "1";
 
-    // ---- Button wrap (inline block, hidden by default) ----
+    // ---- Build the button ----
     const wrap = document.createElement("div");
     wrap.className = "engram-save-wrap";
 
@@ -607,30 +649,42 @@
       `<span class="engram-btn-label">Save to ENGRAM</span>` +
       `<span class="engram-btn-caret">▾</span>`;
     wrap.appendChild(btn);
-    assistantEl.appendChild(wrap);
 
-    // ---- Hover: JS events on the message container ----
-    // We walk up to find a reasonable hover target (avoids pointer-events
-    // issues that break CSS :hover on some platforms).
+    // ---- Find best injection anchor inside the assistant element ----
+    // We prefer the innermost prose container so the button appears right
+    // below the response text, before ChatGPT/Claude action buttons.
+    const proseAnchor =
+      assistantEl.querySelector(".markdown") ||
+      assistantEl.querySelector('[class*="prose"]') ||
+      assistantEl.querySelector('[class*="markdown"]') ||
+      assistantEl.querySelector("message-content") ||
+      assistantEl.querySelector(".query-text") ||
+      null;
+
+    if (proseAnchor && proseAnchor.parentElement) {
+      // Insert wrap after the prose block, as a sibling inside its parent
+      proseAnchor.insertAdjacentElement("afterend", wrap);
+    } else {
+      // Fallback: append at the end of the assistantEl itself
+      assistantEl.appendChild(wrap);
+    }
+
+    // ---- Hover: bump to full opacity; revert on leave ----
+    // Buttons are visible by default (CSS opacity: 0.45).
+    // On hover of the containing article we go to full opacity.
     const hoverTarget = assistantEl.closest("article") || assistantEl;
     if (!hoverTarget.dataset.engramHoverBound) {
       hoverTarget.dataset.engramHoverBound = "1";
       hoverTarget.addEventListener("mouseenter", () => {
-        // Show all save-wrap buttons inside this container
         hoverTarget.querySelectorAll(".engram-save-wrap").forEach((w) => {
-          if (!w.classList.contains("engram-open")) {
-            w.style.opacity = "1";
-            w.style.pointerEvents = "auto";
-          }
+          w.style.opacity = "1";
         });
       });
-      hoverTarget.addEventListener("mouseleave", (e) => {
-        // Hide unless dropdown is open for this wrap
+      hoverTarget.addEventListener("mouseleave", () => {
         if (engramGlobalDropdown?.classList.contains("engram-dropdown-open")) return;
         hoverTarget.querySelectorAll(".engram-save-wrap").forEach((w) => {
           if (!w.classList.contains("engram-open")) {
-            w.style.opacity = "0";
-            w.style.pointerEvents = "none";
+            w.style.opacity = ""; // revert to CSS default (0.45)
           }
         });
       });
@@ -648,7 +702,6 @@
       if (!alreadyOpen) {
         wrap.classList.add("engram-open");
         wrap.style.opacity = "1";
-        wrap.style.pointerEvents = "auto";
         btn.setAttribute("aria-expanded", "true");
         openDropdownFor(btn, userText, assistantText, wrap);
       }
