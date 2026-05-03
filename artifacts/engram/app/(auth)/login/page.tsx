@@ -127,9 +127,14 @@ export default function LoginPage() {
               supabaseClient={supabase}
               providers={["google", "github"]}
               redirectTo={
-                typeof window !== "undefined"
-                  ? `${window.location.origin}/auth/callback`
-                  : undefined
+                // Prefer an explicit site URL when one is configured (avoids
+                // any chance of falling back to localhost from inside an
+                // iframe or proxy). Otherwise use the current window origin.
+                (process.env.NEXT_PUBLIC_SITE_URL
+                  ? `${process.env.NEXT_PUBLIC_SITE_URL.replace(/\/$/, "")}/auth/callback`
+                  : typeof window !== "undefined"
+                    ? `${window.location.origin}/auth/callback`
+                    : undefined)
               }
               appearance={{
                 theme: ThemeSupa,
