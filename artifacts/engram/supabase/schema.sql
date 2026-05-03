@@ -167,13 +167,28 @@ create trigger integrations_updated_at
 
 create or replace function public.handle_new_user()
 returns trigger as $$
+declare
+  new_team_id uuid;
+  team_name text;
 begin
-  insert into public.profiles (id, email, full_name, avatar_url)
+  -- Each new user gets their own personal team by default; they can be
+  -- invited to other teams later.
+  team_name := coalesce(
+    split_part(new.email, '@', 1),
+    'Personal'
+  ) || '''s workspace';
+
+  insert into public.teams (name)
+  values (team_name)
+  returning id into new_team_id;
+
+  insert into public.profiles (id, email, full_name, avatar_url, team_id)
   values (
     new.id,
     new.email,
     new.raw_user_meta_data ->> 'full_name',
-    new.raw_user_meta_data ->> 'avatar_url'
+    new.raw_user_meta_data ->> 'avatar_url',
+    new_team_id
   );
   return new;
 end;
