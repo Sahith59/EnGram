@@ -247,10 +247,53 @@ export async function GET() {
       total = t.count ?? 0;
     }
   }
+  // Probe the OpenAI key with a tiny request so the UI can tell the
+  // difference between "no key" / "key works" / "key out of quota".
+  let openAIStatus: "ok" | "missing" | "quota" | "auth" | "error" = "missing";
+  let openAIDetail: string | null = null;
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const probe = await fetch("https://api.openai.com/v1/embeddings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({ model: "text-embedding-3-small", input: "ping" }),
+      });
+      if (probe.ok) {
+        openAIStatus = "ok";
+      } else if (probe.status === 401) {
+        openAIStatus = "auth";
+        openAIDetail = "Invalid OpenAI API key.";
+      } else if (probe.status === 429) {
+        openAIStatus = "quota";
+        const j = await probe.json().catch(() => null);
+        openAIDetail =
+          j?.error?.code === "insufficient_quota"
+            ? "Your OpenAI account has no quota. Add a payment method at platform.openai.com/account/billing — embeddings cost ~$0.02 per million tokens."
+            : "OpenAI rate limit hit. Wait a moment and retry.";
+      } else {
+        openAIStatus = "error";
+        openAIDetail = `OpenAI returned ${probe.status}.`;
+      }
+    } catch (e) {
+      openAIStatus = "error";
+      openAIDetail = e instanceof Error ? e.message : String(e);
+    }
+  }
+  console.log("[backfill-status]", {
+    total: total ?? 0,
+    missing: missing ?? 0,
+    openAIStatus,
+  });
   return NextResponse.json({
     total: total ?? 0,
     embedded: (total ?? 0) - (missing ?? 0),
     missing: missing ?? 0,
+    openAIStatus,
+    openAIDetail,
     hasOpenAIKey: !!process.env.OPENAI_API_KEY,
   });
 }
+
