@@ -1,5 +1,5 @@
 -- ============================================================
--- 0012: GitHub Integration
+-- 0012: GitHub Integration  (idempotent — safe to re-run)
 -- github_repos + github_chunks tables with vector search
 -- ============================================================
 
@@ -28,7 +28,7 @@ create table if not exists public.github_repos (
 create index if not exists idx_github_repos_team_id
   on public.github_repos(team_id);
 
--- Indexed file chunks with embeddings
+-- Indexed file chunks + commit chunks with embeddings
 create table if not exists public.github_chunks (
   id           uuid primary key default uuid_generate_v4(),
   repo_id      uuid not null references public.github_repos(id) on delete cascade,
@@ -51,6 +51,11 @@ create index if not exists idx_github_chunks_team_id
 -- RLS for github_repos
 alter table public.github_repos enable row level security;
 
+drop policy if exists "team members can view github repos"   on public.github_repos;
+drop policy if exists "team members can insert github repos" on public.github_repos;
+drop policy if exists "team members can update github repos" on public.github_repos;
+drop policy if exists "team members can delete github repos" on public.github_repos;
+
 create policy "team members can view github repos"
   on public.github_repos for select
   using (team_id = public.my_team_id());
@@ -70,6 +75,10 @@ create policy "team members can delete github repos"
 -- RLS for github_chunks
 alter table public.github_chunks enable row level security;
 
+drop policy if exists "team members can view github chunks"   on public.github_chunks;
+drop policy if exists "team members can insert github chunks" on public.github_chunks;
+drop policy if exists "team members can delete github chunks" on public.github_chunks;
+
 create policy "team members can view github chunks"
   on public.github_chunks for select
   using (team_id = public.my_team_id());
@@ -82,13 +91,13 @@ create policy "team members can delete github chunks"
   on public.github_chunks for delete
   using (team_id = public.my_team_id());
 
--- Vector search function for GitHub chunks
+-- Vector search function for GitHub chunks (files + commits)
 create or replace function public.search_github_chunks(
   query_embedding  vector(1536),
   team_id_filter   uuid,
   repo_id_filter   uuid   default null,
   match_count      int    default 8,
-  match_threshold  float  default 0.5
+  match_threshold  float  default 0.45
 )
 returns table (
   id          uuid,

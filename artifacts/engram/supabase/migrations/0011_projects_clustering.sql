@@ -1,5 +1,5 @@
 -- ============================================================
--- 0011: Project Clustering
+-- 0011: Project Clustering  (idempotent — safe to re-run)
 -- Projects table + project_id FK on context_snapshots
 -- pgvector function for centroid similarity search
 -- ============================================================
@@ -30,6 +30,11 @@ create index if not exists idx_context_snapshots_project_id
 -- RLS for projects
 alter table public.projects enable row level security;
 
+drop policy if exists "team members can view projects"   on public.projects;
+drop policy if exists "team members can insert projects" on public.projects;
+drop policy if exists "team members can update projects" on public.projects;
+drop policy if exists "team members can delete projects" on public.projects;
+
 create policy "team members can view projects"
   on public.projects for select
   using (team_id = public.my_team_id());
@@ -55,7 +60,6 @@ create policy "team members can delete projects"
   );
 
 -- Helper: find best-matching project centroid for a given embedding
--- Returns projects ordered by cosine similarity, filtered by threshold
 create or replace function public.find_nearest_project(
   query_embedding  vector(1536),
   team_id_filter   uuid,
@@ -63,9 +67,9 @@ create or replace function public.find_nearest_project(
   match_count      int   default 5
 )
 returns table (
-  id          uuid,
-  name        text,
-  similarity  float,
+  id             uuid,
+  name           text,
+  similarity     float,
   snapshot_count int
 )
 language sql stable as $$
