@@ -8,7 +8,23 @@ const captureBtn = document.getElementById("capture-btn");
 const apiUrlInput = document.getElementById("api-url");
 const toast = document.getElementById("toast");
 
+// Detected-project card elements
+const detectedProjectCard = document.getElementById("detected-project");
+const dpRepo = document.getElementById("dp-repo");
+const dpProjectName = document.getElementById("dp-project-name");
+const dpConfidence = document.getElementById("dp-confidence");
+const dpBar = document.getElementById("dp-bar");
+const dpChangeBtn = document.getElementById("dp-change-btn");
+const dpWrongLabel = document.getElementById("dp-wrong-label");
+const projectPickerWrap = document.getElementById("project-picker-wrap");
+const projectPicker = document.getElementById("project-picker");
+const reassignConfirm = document.getElementById("reassign-confirm");
+
 const SUPPORTED = ["chat.openai.com", "chatgpt.com", "claude.ai", "gemini.google.com"];
+
+// Track the last captured snapshot id for reassignment
+let lastSnapshotId = null;
+let lastDetectedProjectId = null;
 
 function send(msg) {
   return new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve));
@@ -31,6 +47,124 @@ function setStatus(state, html) {
   text.innerHTML = html;
 }
 
+// ── Detected Project Card ─────────────────────────────────────────────────────
+
+/**
+ * Show the "Routed to project" card after a successful capture.
+ * @param {{ id, name, repo, score, confident } | null} project
+ * @param {string} snapshotId
+ */
+function showDetectedProject(project, snapshotId) {
+  lastSnapshotId = snapshotId;
+  lastDetectedProjectId = project?.id ?? null;
+
+  if (!project) {
+    detectedProjectCard.classList.remove("show", "confident", "ambiguous");
+    return;
+  }
+
+  // Repo name (monospace, prominent)
+  dpRepo.childNodes[0].textContent = project.repo || project.name;
+  dpProjectName.textContent = project.repo ? `Project: ${project.name}` : "";
+
+  // Confidence score
+  const pct = Math.round(project.score * 100);
+  const isConfident = project.confident && project.score >= 0.45;
+
+  dpConfidence.textContent = `${pct}% match`;
+  dpConfidence.className = `dp-confidence ${isConfident ? "high" : "low"}`;
+
+  dpBar.style.width = `${Math.min(pct, 100)}%`;
+  dpBar.className = `dp-bar ${isConfident ? "" : "low"}`;
+
+  detectedProjectCard.className = `detected-project show ${isConfident ? "confident" : "ambiguous"}`;
+  // Reset picker state
+  projectPickerWrap.classList.remove("show");
+  dpChangeBtn.textContent = "Change ▾";
+
+  if (!isConfident) {
+    dpWrongLabel.textContent = "Low confidence — correct if needed";
+  } else {
+    dpWrongLabel.textContent = "Wrong project?";
+  }
+}
+
+// "Change ▾" button — toggle project picker
+dpChangeBtn.addEventListener("click", async () => {
+  const isOpen = projectPickerWrap.classList.contains("show");
+  if (isOpen) {
+    projectPickerWrap.classList.remove("show");
+    dpChangeBtn.textContent = "Change ▾";
+    return;
+  }
+
+  dpChangeBtn.textContent = "Loading…";
+  await loadProjectsIntoPicker();
+  projectPickerWrap.classList.add("show");
+  dpChangeBtn.textContent = "Close ✕";
+});
+
+async function loadProjectsIntoPicker() {
+  projectPicker.innerHTML = '<option value="">Loading…</option>';
+  reassignConfirm.disabled = true;
+
+  const result = await send({ type: "GET_PROJECTS" });
+  const projects = result?.projects ?? [];
+
+  if (projects.length === 0) {
+    projectPicker.innerHTML = '<option value="">No indexed projects found</option>';
+    return;
+  }
+
+  projectPicker.innerHTML =
+    '<option value="">— choose a project —</option>' +
+    projects
+      .map(
+        (p) =>
+          `<option value="${escapeHtml(p.id)}"${p.id === lastDetectedProjectId ? " selected" : ""}>${escapeHtml(
+            p.repo_full_name ? `${p.repo_full_name} (${p.name})` : p.name
+          )}</option>`
+      )
+      .join("");
+
+  reassignConfirm.disabled = false;
+}
+
+projectPicker.addEventListener("change", () => {
+  reassignConfirm.disabled = !projectPicker.value;
+});
+
+reassignConfirm.addEventListener("click", async () => {
+  const targetProjectId = projectPicker.value;
+  if (!targetProjectId || !lastSnapshotId) return;
+
+  reassignConfirm.disabled = true;
+  reassignConfirm.textContent = "Moving…";
+
+  const result = await send({
+    type: "REASSIGN_SNAPSHOT",
+    snapshotId: lastSnapshotId,
+    projectId: targetProjectId,
+  });
+
+  if (result?.ok) {
+    const projectName = result.project?.name ?? "selected project";
+    showToast(`Moved to: ${projectName}`, "ok");
+    lastDetectedProjectId = targetProjectId;
+    projectPickerWrap.classList.remove("show");
+    dpChangeBtn.textContent = "Change ▾";
+    dpProjectName.textContent = `Project: ${projectName}`;
+    dpWrongLabel.textContent = "Wrong project?";
+  } else {
+    showToast(result?.error ?? "Reassign failed", "err");
+  }
+
+  reassignConfirm.disabled = false;
+  reassignConfirm.textContent = "Move capture";
+});
+
+// ── Identity & Teams ──────────────────────────────────────────────────────────
+
 async function refreshIdentity() {
   setStatus("warn", "Checking…");
   const ident = await send({ type: "GET_IDENTITY", force: true });
@@ -40,7 +174,6 @@ async function refreshIdentity() {
   if (ident?.connected) {
     const label = ident.user.full_name || ident.user.email || "Connected";
     setStatus("ok", `Connected · <span class="muted">${label}</span>`);
-    // Refresh team list whenever identity changes — picker needs it.
     await refreshTeams(apiUrl, ident);
   } else {
     setStatus(
@@ -50,23 +183,15 @@ async function refreshIdentity() {
   }
 }
 
-// ----- Team picker (only relevant when mode === "team") -----
 let knownTeams = [];
 
 async function refreshTeams(apiUrl, ident) {
   try {
     const res = await fetch(`${apiUrl}/api/teams`, { credentials: "include" });
-    if (!res.ok) {
-      knownTeams = [];
-      return;
-    }
+    if (!res.ok) { knownTeams = []; return; }
     const data = await res.json();
-    // Only shareable teams (skip the user's personal one — "Team mode" is
-    // about sharing, and personal mode handles personal captures).
     knownTeams = (data?.teams ?? []).filter((t) => !t.isPersonal);
 
-    // If the user has only one shareable team and no selection yet, default
-    // to it. If they have a stale selection (left that team), clear it.
     const { engram_team_id } = await chrome.storage.local.get("engram_team_id");
     const stillMember = engram_team_id && knownTeams.some((t) => t.id === engram_team_id);
     if (!stillMember) {
@@ -88,9 +213,6 @@ const teamPicker = document.getElementById("team-picker");
 const teamPickerHint = document.getElementById("team-picker-hint");
 
 async function paintTeamPicker() {
-  // Only render the dropdown when the user is in TEAM mode AND belongs to
-  // at least one shareable team. Single-team users see a static label so
-  // they understand which team will receive the capture.
   const { engram_capture_mode, engram_team_id } = await chrome.storage.local.get([
     "engram_capture_mode",
     "engram_team_id",
@@ -104,11 +226,8 @@ async function paintTeamPicker() {
 
   teamPickerField.style.display = "block";
 
-  // Multiple teams → real <select>. Single team → just show its name.
   if (knownTeams.length === 1) {
-    teamPicker.innerHTML = `<option value="${knownTeams[0].id}">${escapeHtml(
-      knownTeams[0].name
-    )}</option>`;
+    teamPicker.innerHTML = `<option value="${knownTeams[0].id}">${escapeHtml(knownTeams[0].name)}</option>`;
     teamPicker.disabled = true;
     teamPickerHint.textContent = "Captures shared with this team.";
   } else {
@@ -116,13 +235,12 @@ async function paintTeamPicker() {
     teamPicker.innerHTML = knownTeams
       .map(
         (t) =>
-          `<option value="${t.id}"${
-            t.id === engram_team_id ? " selected" : ""
-          }>${escapeHtml(t.name)}${t.role !== "member" ? ` (${t.role})` : ""}</option>`
+          `<option value="${t.id}"${t.id === engram_team_id ? " selected" : ""}>${escapeHtml(t.name)}${
+            t.role !== "member" ? ` (${t.role})` : ""
+          }</option>`
       )
       .join("");
-    teamPickerHint.textContent =
-      "Pick which team should receive this capture. Change anytime.";
+    teamPickerHint.textContent = "Pick which team should receive this capture.";
   }
 }
 
@@ -144,6 +262,8 @@ teamPicker.addEventListener("change", async () => {
   if (team) showToast(`Team mode → ${team.name}`, "ok");
 });
 
+// ── Tab context ───────────────────────────────────────────────────────────────
+
 async function refreshTabContext() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const host = tab?.url ? new URL(tab.url).hostname : "";
@@ -155,6 +275,8 @@ async function refreshTabContext() {
   return tab;
 }
 
+// ── Navigation ────────────────────────────────────────────────────────────────
+
 document.getElementById("dashboard-btn").addEventListener("click", async () => {
   const { url } = await send({ type: "GET_API_URL" });
   chrome.tabs.create({ url: `${url}/dashboard` });
@@ -165,22 +287,16 @@ document.getElementById("ask-btn").addEventListener("click", async () => {
   chrome.tabs.create({ url: `${url}/ask` });
 });
 
+// ── Content-script injection ──────────────────────────────────────────────────
+
 async function ensureContentScript(tabId) {
-  // Try a no-op ping; if no listener responds, inject the content script.
   try {
     await chrome.tabs.sendMessage(tabId, { type: "PING" });
     return true;
   } catch {
     try {
-      await chrome.scripting.insertCSS({
-        target: { tabId },
-        files: ["content.css"],
-      });
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ["content.js"],
-      });
-      // Give it a moment to register listeners
+      await chrome.scripting.insertCSS({ target: { tabId }, files: ["content.css"] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
       await new Promise((r) => setTimeout(r, 300));
       return true;
     } catch (e) {
@@ -190,9 +306,15 @@ async function ensureContentScript(tabId) {
   }
 }
 
+// ── Capture ───────────────────────────────────────────────────────────────────
+
 captureBtn.addEventListener("click", async () => {
   captureBtn.disabled = true;
   captureBtn.textContent = "Capturing…";
+
+  // Hide previous routing result while new capture is in progress
+  detectedProjectCard.classList.remove("show", "confident", "ambiguous");
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   try {
     const ready = await ensureContentScript(tab.id);
@@ -201,7 +323,17 @@ captureBtn.addEventListener("click", async () => {
     } else {
       const result = await chrome.tabs.sendMessage(tab.id, { type: "CAPTURE_NOW" });
       if (result?.ok) {
-        showToast(`Saved: ${result.data?.title ?? "snapshot"}`, "ok");
+        const dp = result.data?.detectedProject ?? null;
+        const snapshotId = result.data?.id ?? null;
+
+        if (dp) {
+          // Show routing card — content-based match found
+          showDetectedProject(dp, snapshotId);
+          showToast(`Saved · ${dp.repo}`, "ok");
+        } else {
+          // Generic conversation — no indexed repo match
+          showToast(`Saved: ${result.data?.title ?? "snapshot"}`, "ok");
+        }
       } else {
         showToast(result?.error ?? "Capture failed", "err");
       }
@@ -212,6 +344,8 @@ captureBtn.addEventListener("click", async () => {
   await refreshTabContext();
 });
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+
 document.getElementById("save-api").addEventListener("click", async () => {
   const url = apiUrlInput.value.trim();
   if (!url) return showToast("Enter a valid URL", "err");
@@ -221,7 +355,6 @@ document.getElementById("save-api").addEventListener("click", async () => {
   await send({ type: "DRAIN_QUEUE" });
 });
 
-// ----- Capture-mode toggle (Personal vs Team) -----
 const modeButtons = document.querySelectorAll(".mode-btn");
 const modeHint = document.getElementById("mode-hint");
 
@@ -242,9 +375,7 @@ function paintModeButtons(active) {
 }
 
 async function loadCaptureMode() {
-  const { engram_capture_mode } = await chrome.storage.local.get(
-    "engram_capture_mode"
-  );
+  const { engram_capture_mode } = await chrome.storage.local.get("engram_capture_mode");
   const mode = engram_capture_mode === "team" ? "team" : "personal";
   paintModeButtons(mode);
 }
@@ -256,10 +387,7 @@ modeButtons.forEach((btn) => {
     paintModeButtons(next);
     await paintTeamPicker();
     if (next === "team" && knownTeams.length === 0) {
-      showToast(
-        "You're not in any shared team yet. Create one in the dashboard.",
-        "err"
-      );
+      showToast("You're not in any shared team yet. Create one in the dashboard.", "err");
     } else {
       showToast(
         next === "team"
@@ -270,6 +398,8 @@ modeButtons.forEach((btn) => {
     }
   });
 });
+
+// ── Init ──────────────────────────────────────────────────────────────────────
 
 (async function init() {
   await refreshTabContext();

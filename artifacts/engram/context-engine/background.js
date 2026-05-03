@@ -2,7 +2,8 @@
 // ENGRAM — Background Service Worker
 // ============================================================
 // Handles: configuration, identity resolution, capture forwarding,
-// and resume lookup. Auth uses session cookies via credentials:'include'.
+// resume lookup, project listing, and snapshot reassignment.
+// Auth uses session cookies via credentials:'include'.
 // ============================================================
 
 const DEFAULT_API =
@@ -38,7 +39,7 @@ async function loadCachedIdentity() {
     "engram_identity",
     "engram_identity_at",
   ]);
-  // 10 minute cache so we don't hammer /api/me on every capture
+  // 10 minute cache
   if (engram_identity && engram_identity_at && Date.now() - engram_identity_at < 600_000) {
     return engram_identity;
   }
@@ -96,10 +97,6 @@ async function capture(payload) {
     };
   }
 
-  // For TEAM captures, prefer the team the user explicitly picked in the
-  // popup. Falls back to their currently-active team only if nothing was
-  // chosen (single-team users, or older clients). Personal captures don't
-  // need a teamId — the server resolves it to the personal workspace.
   let resolvedTeamId = ident.team_id;
   if (payload.mode === "team") {
     const { engram_team_id } = await chrome.storage.local.get("engram_team_id");
@@ -128,10 +125,19 @@ async function capture(payload) {
       return { ok: false, error: data?.error ?? `Backend ${res.status}`, queued: true };
     }
 
-    await setBadge("✓", "#22c55e", 4000);
+    // Badge: purple dot if ambiguous routing, green if confident
+    const dp = data?.detectedProject;
+    if (dp?.confident) {
+      await setBadge("✓", "#22c55e", 4000);
+    } else if (dp) {
+      await setBadge("?", "#7c3aed", 5000); // routed but low confidence
+    } else {
+      await setBadge("✓", "#22c55e", 4000);
+    }
+
     try {
-      // Notifications API requires an icon — skip silently if unavailable
       if (chrome.notifications?.create) {
+        const repoLabel = dp?.repo ? ` → ${dp.repo}` : "";
         chrome.notifications.create({
           type: "basic",
           iconUrl:
@@ -139,7 +145,7 @@ async function capture(payload) {
             btoa(
               '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect width="48" height="48" rx="10" fill="#7c3aed"/><text x="24" y="32" text-anchor="middle" font-family="monospace" font-size="14" font-weight="700" fill="white">E</text></svg>'
             ),
-          title: "ENGRAM — captured",
+          title: "ENGRAM — captured" + repoLabel,
           message: data.title ?? "Conversation snapshot saved",
         });
       }
@@ -161,6 +167,47 @@ async function getResume(tool) {
     const res = await fetch(url.toString(), { credentials: "include" });
     if (!res.ok) return { ok: false, error: `Resume ${res.status}` };
     return { ok: true, data: (await res.json()).data };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+// ----- Projects list (for popup "Wrong repo?" picker) -----
+async function getProjects() {
+  const api = await getApiUrl();
+  try {
+    const res = await fetch(`${api}/api/projects`, { credentials: "include" });
+    if (!res.ok) return { ok: false, projects: [] };
+    const data = await res.json();
+    // Normalize: support both { projects: [...] } and { data: [...] }
+    const raw = data?.projects ?? data?.data ?? [];
+    // Return a lightweight list: id, name, repo_full_name
+    const projects = raw.map((p) => ({
+      id: p.id,
+      name: p.name,
+      repo_full_name: p.repo?.repo_full_name ?? p.repo_full_name ?? null,
+    }));
+    return { ok: true, projects };
+  } catch (err) {
+    return { ok: false, projects: [], error: String(err) };
+  }
+}
+
+// ----- Snapshot reassignment (extension "Wrong repo?" correction) -----
+async function reassignSnapshot({ snapshotId, projectId }) {
+  const api = await getApiUrl();
+  try {
+    const res = await fetch(`${api}/api/capture/reassign`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ snapshotId, projectId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, error: data?.error ?? `Reassign failed (${res.status})` };
+    }
+    return { ok: true, project: data.project };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
@@ -201,8 +248,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "SET_API_URL") {
     chrome.storage.local
       .set({ engram_api_url: (msg.url || "").trim().replace(/\/$/, "") })
-      // Clear identity AND any cached team_id — the new backend will have
-      // different team UUIDs, so an old selection would always 403.
       .then(() =>
         chrome.storage.local.remove(["engram_identity", "engram_team_id"])
       )
@@ -213,8 +258,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     drainQueue().then(() => sendResponse({ ok: true }));
     return true;
   }
-  // Fetch the user's teams so the inline save-button dropdown can be populated
-  // from the content script (which can't make cross-origin requests directly).
   if (msg?.type === "GET_TEAMS") {
     getApiUrl().then(async (api) => {
       try {
@@ -228,8 +271,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     });
     return true;
   }
-  // Single-pair capture: user routed one specific AI response to a destination.
-  // Payload: { pairs, tool, url, mode, teamId }
+  // GET_PROJECTS — lightweight list for "Wrong repo?" popup picker
+  if (msg?.type === "GET_PROJECTS") {
+    getProjects().then(sendResponse);
+    return true;
+  }
+  // REASSIGN_SNAPSHOT — move capture to a different project (1-click correction)
+  if (msg?.type === "REASSIGN_SNAPSHOT") {
+    reassignSnapshot({ snapshotId: msg.snapshotId, projectId: msg.projectId }).then(
+      sendResponse
+    );
+    return true;
+  }
+  // Single-pair capture
   if (msg?.type === "CAPTURE_PAIR") {
     capture(msg.payload).then(sendResponse);
     return true;
@@ -237,7 +291,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
-  console.log("[engram] extension installed");
+  console.log("[engram] extension installed / updated");
   await fetchIdentity({ force: true });
 });
 

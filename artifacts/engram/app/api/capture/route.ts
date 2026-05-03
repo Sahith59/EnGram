@@ -8,6 +8,7 @@ import { ensureUserTeam } from "@/lib/team";
 import { hashConversation, hashConversationIdentity } from "@/lib/hash";
 import { buildSnapshotEmbeddingInput, embedText } from "@/lib/embeddings";
 import { assignSnapshotToProject } from "@/lib/clustering";
+import { detectRepoFromConversation, DetectedRepo } from "@/lib/repo-detector";
 
 export function OPTIONS(request: NextRequest) {
   return corsOptions(request);
@@ -18,6 +19,16 @@ export function OPTIONS(request: NextRequest) {
  * Two auth modes supported:
  *  1. Session cookie (preferred — extension uses credentials: 'include').
  *  2. Shared secret + explicit userId in body (legacy / for testing).
+ *
+ * Routing priority:
+ *  1. Semantic repo match — embed conversation → search all indexed repo
+ *     chunks → highest-scoring repo's project wins (content-driven, no tab
+ *     detection needed, works with unlimited GitHub tabs open).
+ *  2. Embedding centroid clustering — fallback for generic conversations that
+ *     don't clearly match any indexed codebase.
+ *
+ * Response includes detectedProject so the extension popup can show
+ * "Saved to: repo-name" with a "Wrong repo?" one-click correction.
  */
 export async function POST(request: NextRequest) {
   if (!isSupabaseConfigured()) {
@@ -56,7 +67,6 @@ export async function POST(request: NextRequest) {
     | undefined;
 
   if (!userId) {
-    // Fallback: shared-secret + explicit userId
     const secret = request.headers.get("x-engram-secret");
     if (!secret || secret !== process.env.EXTENSION_SECRET) {
       return withCors(
@@ -77,8 +87,6 @@ export async function POST(request: NextRequest) {
   }
 
   const { pairs, tool, url, teamId } = body;
-  // Default to 'personal' so existing extensions (which don't send mode) keep
-  // working with the safest possible scope (private to the user).
   const visibility: "personal" | "team" =
     body.mode === "team" ? "team" : "personal";
   if (!pairs || !Array.isArray(pairs) || pairs.length === 0 || !tool) {
@@ -88,13 +96,10 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ----- Resolve team_id (auto-create personal workspace if missing) -----
+  // ----- Resolve team_id -----
   const admin = createAdminClient();
   let resolvedTeamId = teamId;
 
-  // SECURITY: never trust a client-supplied teamId blindly. The capture
-  // endpoint uses the admin client (which bypasses RLS) for INSERT, so a
-  // crafted body could otherwise write into any team. Verify membership.
   if (resolvedTeamId) {
     const { data: membership } = await admin
       .from("team_members")
@@ -128,19 +133,10 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ----- Dedup logic (two-tier, gracefully degrades if migration not applied) -----
+  // ----- Dedup: Tier 1 exact content match -----
   const contentHash = hashConversation(pairs);
   const identityHash = hashConversationIdentity(pairs);
 
-  // Tier 1: exact content match → return as-is, zero work.
-  // Scoped to (team_id, created_by, visibility) so a personal capture and a
-  // team capture of the same chat by the same user are distinct rows.
-  //
-  // IMPORTANT: use .limit(1) + array indexing instead of .maybeSingle().
-  // .maybeSingle() returns NULL data + error when MULTIPLE rows match
-  // (PGRST116). If concurrent captures ever raced past dedup once, every
-  // subsequent capture would also see "null" and insert another duplicate.
-  // Always-pick-newest is safer and idempotent.
   let exact: { id: string; title: string; summary: string | null } | null = null;
   try {
     const r = await admin
@@ -154,8 +150,7 @@ export async function POST(request: NextRequest) {
       .limit(1);
     exact = r.data?.[0] ?? null;
   } catch {
-    // content_hash or visibility column missing — fall through, tier 2/insert
-    // path will still apply.
+    // content_hash column missing — fall through
   }
 
   if (exact) {
@@ -175,14 +170,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Tier 1.5: same source URL match — even if content_hash differs (e.g.
-  // because UI noise leaked through normalization), the same source_url under
-  // the same scope is by definition the same conversation. We pick the most
-  // recent row and:
-  //   - if the new pairs are NOT longer, treat as duplicate (return existing)
-  //   - if the new pairs ARE longer, fall through to tier 2 update path
-  // This is the hard backstop that prevents the "5 identical rows" bug even
-  // when something exotic breaks normalization.
+  // ----- Dedup: Tier 1.5 same source URL -----
   type Sibling = {
     id: string;
     title: string;
@@ -204,7 +192,7 @@ export async function POST(request: NextRequest) {
         .limit(1);
       urlMatch = (r.data?.[0] as Sibling | undefined) ?? null;
     } catch {
-      // source_url column missing — skip.
+      // source_url column missing — skip
     }
   }
   if (urlMatch) {
@@ -229,8 +217,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Tier 2: same conversation identity (first user message + reply),
-  // possibly grown. If found, we'll UPDATE in place rather than INSERT.
+  // ----- Dedup: Tier 2 same identity -----
   let sibling: Sibling | null = urlMatch;
   if (!sibling) {
     try {
@@ -245,7 +232,7 @@ export async function POST(request: NextRequest) {
         .limit(1);
       sibling = (r.data?.[0] as Sibling | undefined) ?? null;
     } catch {
-      // identity_hash column doesn't exist — skip tier 2 dedup.
+      // identity_hash doesn't exist — skip tier 2
     }
   }
 
@@ -276,7 +263,7 @@ export async function POST(request: NextRequest) {
   const conversationText = pairs
     .map((p) => `${p.role.toUpperCase()}: ${p.content}`)
     .join("\n\n")
-    .slice(0, 180_000); // ~150K chars for very long projects
+    .slice(0, 180_000);
 
   let extraction: {
     title: string;
@@ -286,9 +273,6 @@ export async function POST(request: NextRequest) {
     context_md: string;
   };
 
-  // Use tool_use to GUARANTEE structurally valid output. Anthropic enforces
-  // the schema on the model side, so we never hit JSON.parse errors from
-  // unescaped quotes, code fences, or truncated strings.
   try {
     const message = await anthropic.messages.create({
       model: "claude-haiku-4-5",
@@ -366,7 +350,6 @@ Call the save_handoff_brief tool with the structured result.`,
       throw new Error("Model did not return a tool_use block");
     }
     extraction = toolUse.input as typeof extraction;
-    // Defensive defaults — schema requires fields, but be safe
     extraction.title = extraction.title || "Untitled conversation";
     extraction.summary = extraction.summary || "";
     extraction.key_decisions = extraction.key_decisions || "";
@@ -388,41 +371,7 @@ Call the save_handoff_brief tool with the structured result.`,
     );
   }
 
-  // ----- Persist: UPDATE existing sibling, or INSERT new -----
-  // Build payload with the optional dedup columns. If the migration hasn't
-  // been applied to the DB, the columns won't exist and Supabase will return
-  // PGRST204 — we then strip them and retry. This makes the system work
-  // out-of-the-box without forcing the user to run SQL.
-  const corePayload = {
-    team_id: resolvedTeamId,
-    created_by: userId,
-    title: extraction.title ?? "Untitled",
-    summary: extraction.summary ?? null,
-    ai_tool: tool as "chatgpt" | "claude" | "gemini" | "other",
-    raw_conversation: pairs,
-    tags: extraction.technologies ?? [],
-    decision: extraction.key_decisions ?? null,
-    rationale: extraction.context_md ?? null,
-  };
-  // Resolve a friendly author handle for shared (team) snapshots so other
-  // members can see who captured each one without exposing emails.
-  let authorHandle: string | null = null;
-  if (visibility === "team") {
-    const { data: prof } = await admin
-      .from("profiles")
-      .select("full_name, email")
-      .eq("id", userId)
-      .maybeSingle();
-    authorHandle =
-      prof?.full_name?.trim() ||
-      (prof?.email ? prof.email.split("@")[0] : null) ||
-      "anonymous";
-  }
-
-  // ----- Generate embedding (Phase 6) -----
-  // Best-effort: if OPENAI_API_KEY is unset or the API fails, we still
-  // persist the snapshot — embedding stays NULL and Ask falls back to
-  // keyword retrieval for that row until backfill runs.
+  // ----- Generate embedding -----
   let embeddingVec: number[] | null = null;
   try {
     const embedInput = buildSnapshotEmbeddingInput({
@@ -441,6 +390,70 @@ Call the save_handoff_brief tool with the structured result.`,
     );
   }
 
+  // ----- Semantic repo detection (runs in parallel with author lookup) -----
+  // This is the "Content Wins" router: match the conversation against every
+  // indexed repo's code chunks. The highest-scoring repo's project wins.
+  // No tab detection — purely content-driven, handles unlimited open tabs.
+  let detectedRepo: DetectedRepo | null = null;
+  let authorHandle: string | null = null;
+
+  const [detectionResult, authorResult] = await Promise.allSettled([
+    embeddingVec
+      ? detectRepoFromConversation({
+          embedding: embeddingVec,
+          teamId: resolvedTeamId,
+        })
+      : Promise.resolve(null),
+    visibility === "team"
+      ? admin
+          .from("profiles")
+          .select("full_name, email")
+          .eq("id", userId)
+          .maybeSingle()
+      : Promise.resolve(null),
+  ]);
+
+  if (detectionResult.status === "fulfilled") {
+    detectedRepo = detectionResult.value;
+    if (detectedRepo) {
+      console.log(
+        `[capture] semantic routing → project "${detectedRepo.projectName}" ` +
+          `(${detectedRepo.repoFullName}) score=${detectedRepo.score.toFixed(3)} ` +
+          `confident=${detectedRepo.confident}`
+      );
+    }
+  } else {
+    console.warn("[capture] repo detection failed:", detectionResult.reason);
+  }
+
+  if (authorResult.status === "fulfilled" && authorResult.value) {
+    const prof = (authorResult.value as { data?: { full_name?: string; email?: string } | null })
+      ?.data;
+    authorHandle =
+      prof?.full_name?.trim() ||
+      (prof?.email ? prof.email.split("@")[0] : null) ||
+      "anonymous";
+  }
+
+  // ----- Build write payload -----
+  const corePayload: Record<string, unknown> = {
+    team_id: resolvedTeamId,
+    created_by: userId,
+    title: extraction.title ?? "Untitled",
+    summary: extraction.summary ?? null,
+    ai_tool: tool as "chatgpt" | "claude" | "gemini" | "other",
+    raw_conversation: pairs,
+    tags: extraction.technologies ?? [],
+    decision: extraction.key_decisions ?? null,
+    rationale: extraction.context_md ?? null,
+  };
+
+  // If semantic routing found a project, bake it in immediately —
+  // no need for the fire-and-forget clustering step.
+  if (detectedRepo) {
+    corePayload.project_id = detectedRepo.projectId;
+  }
+
   const optionalDedupFields = {
     content_hash: contentHash,
     identity_hash: identityHash,
@@ -450,10 +463,6 @@ Call the save_handoff_brief tool with the structured result.`,
     ...(embeddingVec ? { embedding: embeddingVec } : {}),
   };
 
-  /**
-   * Try a Supabase write with the optional dedup columns. If Supabase reports
-   * PGRST204 (column missing), retry once without them.
-   */
   async function writeWithFallback(
     op: (extra: Record<string, unknown>) => Promise<{
       data: { id: string; title: string; summary: string | null } | null;
@@ -470,6 +479,7 @@ Call the save_handoff_brief tool with the structured result.`,
     return first;
   }
 
+  // ----- UPDATE existing sibling -----
   if (willUpdateExisting && sibling) {
     const { data: updated, error: updateError } = await writeWithFallback(
       (extra) =>
@@ -492,6 +502,21 @@ Call the save_handoff_brief tool with the structured result.`,
       );
     }
 
+    // If no semantic match, fall back to centroid clustering asynchronously
+    if (!detectedRepo && embeddingVec && resolvedTeamId) {
+      Promise.resolve().then(() =>
+        assignSnapshotToProject({
+          snapshotId: updated.id,
+          teamId: resolvedTeamId!,
+          embedding: embeddingVec!,
+          title: extraction.title,
+          summary: extraction.summary,
+        }).catch((e) =>
+          console.warn("[capture] clustering fire-and-forget error:", e)
+        )
+      );
+    }
+
     return withCors(
       NextResponse.json(
         {
@@ -501,6 +526,15 @@ Call the save_handoff_brief tool with the structured result.`,
           title: updated.title,
           summary: updated.summary,
           message: "Existing snapshot updated with new conversation content.",
+          detectedProject: detectedRepo
+            ? {
+                id: detectedRepo.projectId,
+                name: detectedRepo.projectName,
+                repo: detectedRepo.repoFullName,
+                score: detectedRepo.score,
+                confident: detectedRepo.confident,
+              }
+            : null,
         },
         { status: 200 }
       ),
@@ -508,6 +542,7 @@ Call the save_handoff_brief tool with the structured result.`,
     );
   }
 
+  // ----- INSERT new snapshot -----
   const { data: snapshot, error: insertError } = await writeWithFallback(
     (extra) =>
       admin
@@ -520,10 +555,7 @@ Call the save_handoff_brief tool with the structured result.`,
       }>
   );
 
-  // Postgres unique-violation (23505) on the dedup indexes added in
-  // migration 0010 — another concurrent capture won the race. Look up the
-  // winner and return it as a duplicate. This makes the INSERT path
-  // idempotent under concurrency.
+  // Unique-violation race: look up winner
   if (insertError && insertError.code === "23505") {
     const winnerQ = await admin
       .from("context_snapshots")
@@ -565,10 +597,8 @@ Call the save_handoff_brief tool with the structured result.`,
     );
   }
 
-  // ── Non-blocking project clustering ──────────────────────────────────────
-  // Fire-and-forget: if it fails or the migration isn't applied yet, the
-  // snapshot is still saved — clustering just gets skipped silently.
-  if (embeddingVec && resolvedTeamId && snapshot) {
+  // If no semantic match, fall back to centroid clustering asynchronously
+  if (!detectedRepo && embeddingVec && resolvedTeamId && snapshot) {
     Promise.resolve().then(() =>
       assignSnapshotToProject({
         snapshotId: snapshot.id,
@@ -589,6 +619,15 @@ Call the save_handoff_brief tool with the structured result.`,
         id: snapshot.id,
         title: snapshot.title,
         summary: snapshot.summary,
+        detectedProject: detectedRepo
+          ? {
+              id: detectedRepo.projectId,
+              name: detectedRepo.projectName,
+              repo: detectedRepo.repoFullName,
+              score: detectedRepo.score,
+              confident: detectedRepo.confident,
+            }
+          : null,
       },
       { status: 201 }
     ),

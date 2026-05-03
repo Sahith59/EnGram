@@ -70,6 +70,111 @@
       .toast.show { display: block; }
       .toast.ok { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); color: #86efac; }
       .toast.err { background: rgba(248,113,113,0.1); border: 1px solid rgba(248,113,113,0.3); color: #fca5a5; }
+
+      /* ── Detected project card ── */
+      #detected-project {
+        display: none;
+        margin-top: 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--card);
+      }
+      #detected-project.show { display: block; }
+      #detected-project.confident { border-color: rgba(124,58,237,0.5); }
+      #detected-project.ambiguous { border-color: rgba(234,179,8,0.4); }
+
+      .dp-header {
+        display: flex; align-items: center; gap: 8px;
+        padding: 9px 12px 6px;
+      }
+      .dp-check {
+        width: 16px; height: 16px; border-radius: 50%;
+        background: rgba(34,197,94,0.15); border: 1px solid rgba(34,197,94,0.4);
+        display: flex; align-items: center; justify-content: center;
+        flex: 0 0 16px; font-size: 9px; color: var(--green);
+      }
+      .dp-label {
+        font-size: 11px; color: var(--muted); text-transform: uppercase;
+        letter-spacing: 0.08em; flex: 1;
+      }
+      .dp-confidence {
+        font-size: 10px; color: var(--muted);
+      }
+      .dp-confidence.high { color: #86efac; }
+      .dp-confidence.low { color: var(--yellow); }
+
+      .dp-repo {
+        padding: 4px 12px 10px;
+        font-size: 12px; font-weight: 600;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        color: var(--engram-light);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .dp-repo span.project-name {
+        color: var(--muted); font-weight: 400; font-family: inherit;
+        font-size: 11px; display: block; margin-top: 1px;
+      }
+
+      /* Confidence bar */
+      .dp-bar-wrap {
+        height: 2px; background: var(--border); margin: 0 12px 10px;
+        border-radius: 1px; overflow: hidden;
+      }
+      .dp-bar {
+        height: 100%; border-radius: 1px;
+        background: var(--engram);
+        transition: width 400ms ease;
+      }
+      .dp-bar.low { background: var(--yellow); }
+
+      /* Wrong repo row */
+      .dp-footer {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 8px 12px;
+        border-top: 1px solid var(--border);
+        background: rgba(0,0,0,0.2);
+      }
+      .dp-wrong-label {
+        font-size: 11px; color: var(--muted);
+      }
+      .dp-change-btn {
+        font-size: 11px; color: var(--engram-light);
+        background: none; border: 1px solid rgba(124,58,237,0.35);
+        border-radius: 5px; padding: 3px 9px; cursor: pointer;
+        font-family: inherit; transition: all 100ms ease;
+      }
+      .dp-change-btn:hover { background: rgba(124,58,237,0.12); border-color: var(--engram); }
+
+      /* Project picker dropdown (shown when "Change" is clicked) */
+      #project-picker-wrap {
+        display: none;
+        padding: 8px 12px 10px;
+        border-top: 1px solid var(--border);
+      }
+      #project-picker-wrap.show { display: block; }
+      #project-picker-wrap label {
+        font-size: 11px; color: var(--muted); text-transform: uppercase;
+        letter-spacing: 0.08em; display: block; margin-bottom: 6px;
+      }
+      #project-picker {
+        width: 100%; box-sizing: border-box;
+        padding: 7px 10px;
+        background: var(--bg); color: var(--text);
+        border: 1px solid var(--border); border-radius: 6px;
+        font-family: inherit; font-size: 12px; cursor: pointer;
+      }
+      #project-picker:focus { outline: none; border-color: var(--engram); }
+      #reassign-confirm {
+        display: block; width: 100%; margin-top: 7px;
+        padding: 7px; background: var(--engram); color: #fff;
+        border: none; border-radius: 6px; cursor: pointer;
+        font-family: inherit; font-size: 12px; font-weight: 500;
+        transition: background 120ms ease;
+      }
+      #reassign-confirm:hover { background: #8b5cf6; }
+      #reassign-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
+
       details {
         margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
       }
@@ -101,7 +206,7 @@
     <div class="wrap">
       <div class="brand">
         <span class="logo">ENGRAM</span>
-        <span class="tag">v0.2</span>
+        <span class="tag">v0.3</span>
       </div>
 
       <div class="status">
@@ -110,6 +215,35 @@
       </div>
 
       <button id="capture-btn" class="btn primary" disabled>Capture this conversation</button>
+
+      <!-- ── Detected project card (shown after a successful capture) ── -->
+      <div id="detected-project">
+        <div class="dp-header">
+          <div class="dp-check">✓</div>
+          <span class="dp-label">Routed to project</span>
+          <span id="dp-confidence" class="dp-confidence"></span>
+        </div>
+        <div class="dp-repo" id="dp-repo">
+          <span id="dp-project-name" class="project-name"></span>
+        </div>
+        <div class="dp-bar-wrap">
+          <div id="dp-bar" class="dp-bar" style="width:0%"></div>
+        </div>
+
+        <!-- Wrong repo picker -->
+        <div id="project-picker-wrap">
+          <label for="project-picker">Move to a different project</label>
+          <select id="project-picker">
+            <option value="">Loading projects…</option>
+          </select>
+          <button id="reassign-confirm" disabled>Move capture</button>
+        </div>
+
+        <div class="dp-footer">
+          <span class="dp-wrong-label" id="dp-wrong-label">Wrong project?</span>
+          <button class="dp-change-btn" id="dp-change-btn">Change ▾</button>
+        </div>
+      </div>
 
       <div class="btn-row">
         <button id="dashboard-btn" class="btn">Dashboard</button>
