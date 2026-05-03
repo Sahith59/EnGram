@@ -43,9 +43,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Failed to join" }, { status: 500 });
   }
 
-  // RPC returns table(team_id uuid, already_member boolean) — empty if invalid/exhausted
+  // RPC returns table(out_team_id uuid, out_already_member boolean) — empty if invalid/exhausted
   const result = Array.isArray(rows) ? rows[0] : rows;
-  if (!result?.team_id) {
+  const teamId = result?.out_team_id;
+  if (!teamId) {
     return NextResponse.json(
       { error: "Invite invalid, expired, revoked, or already used up." },
       { status: 400 }
@@ -55,18 +56,18 @@ export async function POST(req: NextRequest) {
   // Switch active team to the joined team (whether new join or already member)
   await admin.rpc("switch_active_team", {
     p_user_id: user.id,
-    p_team_id: result.team_id,
+    p_team_id: teamId,
   });
 
   const { data: team } = await admin
     .from("teams")
     .select("id, name, slug")
-    .eq("id", result.team_id)
+    .eq("id", teamId)
     .single();
 
   return NextResponse.json({
     success: true,
     team,
-    alreadyMember: !!result.already_member,
+    alreadyMember: !!result.out_already_member,
   });
 }
