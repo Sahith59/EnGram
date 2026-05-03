@@ -1,16 +1,19 @@
 {
   "manifest_version": 3,
   "name": "ENGRAM — Context Engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Capture AI conversations from ChatGPT, Claude, and Gemini into your team knowledge base.",
-  "permissions": ["storage", "activeTab", "scripting"],
+  "permissions": ["storage", "activeTab", "scripting", "notifications"],
   "host_permissions": [
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
     "https://claude.ai/*",
     "https://gemini.google.com/*",
-    "http://localhost:3000/*"
+    "http://localhost:3000/*",
+    "https://*.replit.dev/*",
+    "https://*.replit.app/*"
   ],
+  "optional_host_permissions": ["https://*/*"],
   "background": {
     "service_worker": "background.js",
     "type": "module"

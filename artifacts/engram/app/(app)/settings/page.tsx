@@ -220,6 +220,12 @@ function ApiTab() {
       <p className="mt-4 text-xs text-gh-muted leading-relaxed">
         Generating a new key will invalidate the previous one. Update your extension afterwards.
       </p>
+      <a
+        href="/settings/extension"
+        className="mt-4 inline-flex items-center gap-2 text-sm text-engram-light hover:underline"
+      >
+        Install the Chrome extension →
+      </a>
     </Card>
   );
 }

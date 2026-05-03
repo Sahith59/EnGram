@@ -1,4 +1,8 @@
 {
+  "/api/me/route": "app/api/me/route.js",
   "/page": "app/page.js",
-  "/auth/callback/route": "app/auth/callback/route.js"
+  "/api/capture/route": "app/api/capture/route.js",
+  "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
+  "/(auth)/login/page": "app/(auth)/login/page.js",
+  "/(app)/settings/extension/page": "app/(app)/settings/extension/page.js"
 }

@@ -1,53 +1,102 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { anthropic } from "@/lib/anthropic";
-import { corsOptions, withCors, CORS_HEADERS } from "@/lib/cors";
+import { corsOptions, withCors } from "@/lib/cors";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 
-export function OPTIONS() {
-  return corsOptions();
+export function OPTIONS(request: NextRequest) {
+  return corsOptions(request);
 }
 
+/**
+ * POST /api/capture
+ * Two auth modes supported:
+ *  1. Session cookie (preferred — extension uses credentials: 'include').
+ *  2. Shared secret + explicit userId in body (legacy / for testing).
+ */
 export async function POST(request: NextRequest) {
   if (!isSupabaseConfigured()) {
     return withCors(
-      NextResponse.json({ error: "Supabase not configured" }, { status: 503 })
-    );
-  }
-  const secret = request.headers.get("x-engram-secret");
-  if (!secret || secret !== process.env.EXTENSION_SECRET) {
-    return withCors(
-      NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+      NextResponse.json({ error: "Supabase not configured" }, { status: 503 }),
+      request
     );
   }
 
+  // ----- Parse body first so we can fall back to secret-based auth -----
   let body: {
     pairs: { role: string; content: string }[];
     tool: string;
     url: string;
-    userId: string;
+    userId?: string;
     teamId?: string;
   };
-
   try {
     body = await request.json();
   } catch {
     return withCors(
-      NextResponse.json({ error: "Invalid JSON" }, { status: 400 })
+      NextResponse.json({ error: "Invalid JSON" }, { status: 400 }),
+      request
     );
   }
 
-  const { pairs, tool, url, userId, teamId } = body;
+  // ----- Resolve identity -----
+  const supabase = await createClient();
+  const sessionRes = await supabase.auth.getUser();
+  let userId: string | null = sessionRes.data.user?.id ?? null;
 
-  if (!pairs || !Array.isArray(pairs) || !tool || !userId) {
+  if (!userId) {
+    // Fallback: shared-secret + explicit userId
+    const secret = request.headers.get("x-engram-secret");
+    if (!secret || secret !== process.env.EXTENSION_SECRET) {
+      return withCors(
+        NextResponse.json(
+          { error: "Unauthorized. Sign into the ENGRAM dashboard in this browser." },
+          { status: 401 }
+        ),
+        request
+      );
+    }
+    if (!body.userId) {
+      return withCors(
+        NextResponse.json({ error: "Missing userId" }, { status: 400 }),
+        request
+      );
+    }
+    userId = body.userId;
+  }
+
+  const { pairs, tool, url, teamId } = body;
+  if (!pairs || !Array.isArray(pairs) || pairs.length === 0 || !tool) {
     return withCors(
-      NextResponse.json({ error: "Missing required fields" }, { status: 400 })
+      NextResponse.json({ error: "Missing required fields" }, { status: 400 }),
+      request
     );
   }
 
+  // ----- Resolve team_id -----
+  const admin = createAdminClient();
+  let resolvedTeamId = teamId;
+  if (!resolvedTeamId) {
+    const { data: profile } = await admin
+      .from("profiles")
+      .select("team_id")
+      .eq("id", userId)
+      .maybeSingle();
+    resolvedTeamId = profile?.team_id ?? undefined;
+  }
+  if (!resolvedTeamId) {
+    return withCors(
+      NextResponse.json({ error: "User has no team" }, { status: 400 }),
+      request
+    );
+  }
+
+  // ----- Summarize via Claude -----
   const conversationText = pairs
     .map((p) => `${p.role.toUpperCase()}: ${p.content}`)
-    .join("\n\n");
+    .join("\n\n")
+    .slice(0, 60_000); // cap to keep prompts bounded
 
   let extraction: {
     title: string;
@@ -86,29 +135,13 @@ Source URL: ${url || "unknown"}`,
   } catch (err) {
     console.error("Claude extraction failed:", err);
     return withCors(
-      NextResponse.json({ error: "AI extraction failed" }, { status: 500 })
+      NextResponse.json({ error: "AI extraction failed" }, { status: 500 }),
+      request
     );
   }
 
-  const supabase = await createClient();
-
-  let resolvedTeamId = teamId;
-  if (!resolvedTeamId) {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("team_id")
-      .eq("id", userId)
-      .single();
-    resolvedTeamId = profile?.team_id ?? undefined;
-  }
-
-  if (!resolvedTeamId) {
-    return withCors(
-      NextResponse.json({ error: "User has no team" }, { status: 400 })
-    );
-  }
-
-  const { data: snapshot, error } = await supabase
+  // ----- Insert snapshot (use admin to bypass RLS scoping headaches) -----
+  const { data: snapshot, error: insertError } = await admin
     .from("context_snapshots")
     .insert({
       team_id: resolvedTeamId,
@@ -124,15 +157,24 @@ Source URL: ${url || "unknown"}`,
     .select("id, title, summary")
     .single();
 
-  if (error) {
-    console.error("DB insert failed:", error);
+  if (insertError) {
+    console.error("DB insert failed:", insertError);
     return withCors(
-      NextResponse.json({ error: "Failed to save snapshot" }, { status: 500 })
+      NextResponse.json({ error: "Failed to save snapshot" }, { status: 500 }),
+      request
     );
   }
 
-  return NextResponse.json(
-    { success: true, id: snapshot.id, title: snapshot.title, summary: snapshot.summary },
-    { status: 201, headers: CORS_HEADERS }
+  return withCors(
+    NextResponse.json(
+      {
+        success: true,
+        id: snapshot.id,
+        title: snapshot.title,
+        summary: snapshot.summary,
+      },
+      { status: 201 }
+    ),
+    request
   );
 }
