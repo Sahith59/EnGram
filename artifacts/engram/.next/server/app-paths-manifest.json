@@ -1,9 +1,10 @@
 {
   "/api/capture/route": "app/api/capture/route.js",
-  "/page": "app/page.js",
+  "/api/contexts/[id]/export/route": "app/api/contexts/[id]/export/route.js",
   "/api/me/route": "app/api/me/route.js",
   "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
   "/(app)/settings/extension/page": "app/(app)/settings/extension/page.js",
   "/(app)/ask/page": "app/(app)/ask/page.js",
-  "/(app)/settings/page": "app/(app)/settings/page.js"
+  "/(app)/resume/page": "app/(app)/resume/page.js",
+  "/(app)/context/[id]/page": "app/(app)/context/[id]/page.js"
 }

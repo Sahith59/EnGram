@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { Check, ClipboardCopy, ChevronDown, ExternalLink } from "lucide-react";
+import { Check, ClipboardCopy, ChevronDown, ExternalLink, Sparkles } from "lucide-react";
 import { ToolBadge } from "./ToolBadge";
 import { cn, formatRelativeTime, truncate } from "@/lib/utils";
 import type { AITool } from "@/types";
@@ -21,8 +21,8 @@ export interface ContextCardData {
 
 const continueTargets = [
   { tool: "claude", label: "Continue in Claude", url: "https://claude.ai/new" },
-  { tool: "chatgpt", label: "Continue in ChatGPT", url: "https://chat.openai.com" },
-  { tool: "gemini", label: "Continue in Gemini", url: "https://gemini.google.com" },
+  { tool: "chatgpt", label: "Continue in ChatGPT", url: "https://chatgpt.com/" },
+  { tool: "gemini", label: "Continue in Gemini", url: "https://gemini.google.com/app" },
 ];
 
 export function ContextCard({
@@ -34,6 +34,7 @@ export function ContextCard({
 }) {
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
+  const [continueState, setContinueState] = useState<"idle" | "preparing" | "ready">("idle");
   const ddRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -48,7 +49,7 @@ export function ContextCard({
     e.preventDefault();
     e.stopPropagation();
     try {
-      const res = await fetch(`/api/contexts/${ctx.id}/export`);
+      const res = await fetch(`/api/contexts/${ctx.id}/export?mode=brief`);
       const text = await res.text();
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -58,12 +59,34 @@ export function ContextCard({
     }
   }
 
+  async function handleContinue(e: React.MouseEvent, target: typeof continueTargets[number]) {
+    e.preventDefault();
+    e.stopPropagation();
+    setContinueState("preparing");
+    try {
+      const res = await fetch(
+        `/api/contexts/${ctx.id}/export?mode=handoff&target=${encodeURIComponent(target.label)}`
+      );
+      const handoffPrompt = await res.text();
+      await navigator.clipboard.writeText(handoffPrompt);
+      setContinueState("ready");
+      // Open the destination tool in a new tab. The user pastes (Cmd/Ctrl+V) on arrival.
+      window.open(target.url, "_blank", "noopener,noreferrer");
+      setTimeout(() => setContinueState("idle"), 4000);
+    } catch (err) {
+      console.error(err);
+      setContinueState("idle");
+    }
+    setOpen(false);
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35, delay: Math.min(index * 0.04, 0.3), ease: [0.21, 0.47, 0.32, 0.98] }}
       whileHover={{ y: -2 }}
+      style={{ position: "relative", zIndex: open ? 50 : "auto" }}
     >
       <Link href={`/context/${ctx.id}`}>
         <div
@@ -152,8 +175,22 @@ export function ContextCard({
                   "text-engram-light hover:bg-engram/10 border border-engram/30 transition-colors"
                 )}
               >
-                Continue
-                <ChevronDown className={cn("h-3 w-3 transition-transform", open && "rotate-180")} />
+                {continueState === "preparing" ? (
+                  <>Preparing…</>
+                ) : continueState === "ready" ? (
+                  <>
+                    <Check className="h-3 w-3" />
+                    <span>Brief copied</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-3 w-3" />
+                    Continue
+                    <ChevronDown
+                      className={cn("h-3 w-3 transition-transform", open && "rotate-180")}
+                    />
+                  </>
+                )}
               </button>
 
               <AnimatePresence>
@@ -163,16 +200,19 @@ export function ContextCard({
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: -4, scale: 0.96 }}
                     transition={{ duration: 0.12 }}
-                    className="absolute right-0 mt-2 w-52 rounded-lg border border-gh-border bg-gh-canvas shadow-2xl shadow-black/50 overflow-hidden z-20"
+                    className="absolute right-0 mt-2 w-72 rounded-lg border border-gh-border bg-gh-canvas shadow-2xl shadow-black/60 overflow-hidden z-50"
                   >
+                    <div className="px-3 py-2 border-b border-gh-border/60 bg-gh-bg/50">
+                      <p className="text-[10px] font-mono uppercase tracking-wider text-gh-muted">
+                        Hand off to
+                      </p>
+                    </div>
                     {continueTargets.map((t) => (
-                      <a
+                      <button
                         key={t.tool}
-                        href={t.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="flex items-center justify-between px-3 py-2 text-xs text-gh-text hover:bg-gh-bg transition-colors group/item"
+                        type="button"
+                        onClick={(e) => handleContinue(e, t)}
+                        className="w-full flex items-center justify-between px-3 py-2.5 text-xs text-gh-text hover:bg-gh-bg transition-colors group/item text-left"
                       >
                         <span className="flex items-center gap-2">
                           <span
@@ -186,8 +226,15 @@ export function ContextCard({
                           {t.label}
                         </span>
                         <ExternalLink className="h-3 w-3 text-gh-muted opacity-0 group-hover/item:opacity-100" />
-                      </a>
+                      </button>
                     ))}
+                    <div className="px-3 py-2 border-t border-gh-border/60 bg-gh-bg/30">
+                      <p className="text-[10px] text-gh-muted leading-snug">
+                        We&apos;ll copy a verified handoff brief to your clipboard, then open the new
+                        tool. Paste with <kbd className="font-mono">⌘V</kbd> /{" "}
+                        <kbd className="font-mono">Ctrl+V</kbd>.
+                      </p>
+                    </div>
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -217,4 +264,3 @@ export function ContextCardSkeleton() {
     </div>
   );
 }
-

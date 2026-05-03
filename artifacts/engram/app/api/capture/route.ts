@@ -102,7 +102,7 @@ export async function POST(request: NextRequest) {
   const conversationText = pairs
     .map((p) => `${p.role.toUpperCase()}: ${p.content}`)
     .join("\n\n")
-    .slice(0, 60_000); // cap to keep prompts bounded
+    .slice(0, 180_000); // ~150K chars for very long projects
 
   let extraction: {
     title: string;
@@ -115,21 +115,68 @@ export async function POST(request: NextRequest) {
   try {
     const message = await anthropic.messages.create({
       model: "claude-haiku-4-5",
-      max_tokens: 1024,
+      max_tokens: 8192,
       messages: [
         {
           role: "user",
-          content: `Analyze this AI conversation and extract structured information. Return ONLY valid JSON with these fields:
-- title: string (concise title for what was built/decided, max 80 chars)
-- summary: string (2-3 sentence summary of the outcome)
-- key_decisions: string (1-3 key decisions made, as a paragraph)
-- technologies: string[] (tech stack items mentioned, e.g. ["React", "Postgres"])
-- context_md: string (full markdown document capturing the conversation context, decisions, and rationale for future reference)
+          content: `You are ENGRAM, a context-engineering system. Your job is to produce a HANDOFF BRIEF that another AI (Claude, ChatGPT, Gemini) can use to continue this project from a cold start WITHOUT hallucinating.
 
-Conversation:
+CRITICAL RULES:
+1. NEVER invent facts. If something isn't in the conversation, omit it.
+2. Quote verbatim where precision matters (code, file paths, names, exact requirements, error messages).
+3. Preserve all code blocks exactly as written, in fenced code blocks with language tags.
+4. Capture intent and constraints, not just what was done.
+
+Return ONLY valid JSON (no commentary, no markdown fences) with these fields:
+- title: string (concise, max 80 chars — what is this project actually about?)
+- summary: string (2-4 sentence executive summary)
+- key_decisions: string (paragraph listing the concrete decisions made and WHY)
+- technologies: string[] (every named tool, framework, library, language, service)
+- context_md: string (the full handoff brief — markdown, can be long, structured as below)
+
+The context_md MUST follow this structure:
+
+# <Project Title>
+
+## 1. Project Goal
+What is the user actually trying to build/decide/solve? In their own words where possible.
+
+## 2. Current State
+What has been built/decided/agreed so far? Be concrete.
+
+## 3. Key Decisions & Rationale
+Numbered list. Each decision: what was chosen, what alternatives were rejected, why.
+
+## 4. Code, Schemas, & Artifacts
+All code blocks, SQL, configs, file structures discussed — verbatim. Use fenced blocks with language tags. If long, include the most recent/relevant version.
+
+## 5. Constraints & Non-Goals
+Hard requirements, things explicitly ruled out, dependencies, deadlines.
+
+## 6. Open Questions / Unresolved
+Anything left dangling, blocked, or pending the user's decision.
+
+## 7. Immediate Next Steps
+What was the user about to do next? What were they asking when this snapshot was taken?
+
+## 8. Verbatim Tail
+The last 2-3 exchanges, verbatim, so the receiving AI has ground-truth recent context. Use:
+> **USER:** ...
+> **ASSISTANT:** ...
+
+## 9. Glossary
+Project-specific terms, codenames, custom abbreviations the user has used.
+
+## 10. Verification Checkpoint
+3-5 specific facts the receiving AI MUST acknowledge before generating new work, e.g. "Confirm the database is Postgres with pgvector enabled" — these prevent silent drift.
+
+If a section has no content, write "_None._" — do not omit the section.
+
+CONVERSATION TO ANALYZE:
 ${conversationText}
 
-Source URL: ${url || "unknown"}`,
+Source URL: ${url || "unknown"}
+Captured: ${new Date().toISOString()}`,
         },
       ],
     });
