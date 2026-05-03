@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, use } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Users, Check, AlertCircle, ArrowRight } from "lucide-react";
@@ -14,12 +14,14 @@ interface Preview {
   uses_remaining?: number;
 }
 
+// Next 14 client-component pages receive `params` as a plain object — DO NOT
+// wrap it in `use()`. Doing so throws "An unsupported type was passed to use()".
 export default function JoinTeamPage({
   params,
 }: {
-  params: Promise<{ code: string }>;
+  params: { code: string };
 }) {
-  const { code } = use(params);
+  const { code } = params;
   const router = useRouter();
   const [preview, setPreview] = useState<Preview | null>(null);
   const [loading, setLoading] = useState(true);

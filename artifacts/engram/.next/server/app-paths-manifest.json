@@ -1,16 +1,17 @@
 {
-  "/api/team/switch/route": "app/api/team/switch/route.js",
-  "/api/me/route": "app/api/me/route.js",
+  "/api/capture/route": "app/api/capture/route.js",
   "/api/teams/route": "app/api/teams/route.js",
   "/api/team/route": "app/api/team/route.js",
-  "/api/team/join/route": "app/api/team/join/route.js",
+  "/api/me/route": "app/api/me/route.js",
+  "/api/team/switch/route": "app/api/team/switch/route.js",
   "/api/team/invite/route": "app/api/team/invite/route.js",
-  "/api/capture/route": "app/api/capture/route.js",
-  "/api/contexts/bulk-visibility/route": "app/api/contexts/bulk-visibility/route.js",
-  "/api/contexts/[id]/route": "app/api/contexts/[id]/route.js",
+  "/api/team/join/route": "app/api/team/join/route.js",
   "/api/contexts/route": "app/api/contexts/route.js",
+  "/api/contexts/[id]/route": "app/api/contexts/[id]/route.js",
+  "/api/contexts/bulk-visibility/route": "app/api/contexts/bulk-visibility/route.js",
   "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
-  "/(app)/settings/page": "app/(app)/settings/page.js",
   "/(app)/team/page": "app/(app)/team/page.js",
-  "/(app)/digest/page": "app/(app)/digest/page.js"
+  "/(app)/team/join/[code]/page": "app/(app)/team/join/[code]/page.js",
+  "/(app)/ask/page": "app/(app)/ask/page.js",
+  "/(app)/context/[id]/page": "app/(app)/context/[id]/page.js"
 }

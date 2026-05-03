@@ -131,10 +131,41 @@
     } else if (TOOL === "gemini") {
       document.querySelectorAll("user-query, model-response").forEach((el) => {
         const role = el.tagName.toLowerCase() === "user-query" ? "user" : "assistant";
-        pairs.push({ role, content: el.innerText?.trim() ?? "" });
+        // Prefer the actual rendered message body — falls back to innerText
+        // if Gemini's structure shifts again. innerText alone picks up Material
+        // icon ligatures (thumb_up, volume_up, …) and action labels which
+        // poison the dedup hash on the server.
+        const body =
+          el.querySelector(".markdown") ||
+          el.querySelector(".query-text") ||
+          el.querySelector("message-content") ||
+          el;
+        pairs.push({ role, content: stripUiNoise(body.innerText ?? "") });
       });
     }
     return pairs.filter((p) => p.content && p.content.length > 1);
+  }
+
+  // Defensive: strip Material-icon ligatures and common Gemini/Claude action
+  // button labels that leak into innerText. Server hashes the same way for
+  // belt-and-braces dedup, but cleaning at source means smaller payloads too.
+  const NOISE_LINES = new Set([
+    "copy", "copy_all", "edit", "more_vert", "more_horiz", "share",
+    "thumb_up", "thumb_down", "volume_up", "volume_off", "stop_circle",
+    "play_arrow", "refresh", "download", "open_in_new", "close", "check",
+    "show drafts", "hide drafts", "good response", "bad response",
+    "regenerate", "regenerate response", "modify response",
+    "retry", "retry from here", "edit message",
+  ]);
+  function stripUiNoise(raw) {
+    if (!raw) return "";
+    return raw
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !NOISE_LINES.has(l.toLowerCase()))
+      .join("\n")
+      .replace(/[ \t]+/g, " ")
+      .trim();
   }
 
   function detectLimitPhrase() {

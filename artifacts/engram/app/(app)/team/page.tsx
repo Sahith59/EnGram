@@ -76,6 +76,18 @@ export default function TeamPage() {
     refresh();
   }, [refresh]);
 
+  // Re-fetch whenever the active team changes elsewhere in the app
+  // (TeamSwitcher fires "engram:team-changed" on create/switch/join).
+  useEffect(() => {
+    function onTeamChanged() {
+      setLoading(true);
+      refresh();
+    }
+    window.addEventListener("engram:team-changed", onTeamChanged);
+    return () =>
+      window.removeEventListener("engram:team-changed", onTeamChanged);
+  }, [refresh]);
+
   const isOwnerOrAdmin = role === "owner" || role === "admin";
   const otherMemberCount = members.filter((m) => m.role !== "owner" || m.id !== members.find((x) => x.role === "owner")?.id).length;
 

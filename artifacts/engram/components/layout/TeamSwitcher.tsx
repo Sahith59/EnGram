@@ -66,6 +66,14 @@ export function TeamSwitcher() {
 
   const active = teams.find((t) => t.isActive) ?? teams[0];
 
+  // Notify any listening client component (e.g. /team page) that the active
+  // team membership changed, so they can refetch without a full route refresh.
+  function broadcastTeamChange() {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("engram:team-changed"));
+    }
+  }
+
   async function switchTo(teamId: string) {
     if (teamId === active?.id) {
       setOpen(false);
@@ -82,6 +90,7 @@ export function TeamSwitcher() {
       if (!r.ok) throw new Error((await r.json()).error ?? "Failed");
       await refresh();
       setOpen(false);
+      broadcastTeamChange();
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Switch failed");
@@ -109,6 +118,7 @@ export function TeamSwitcher() {
       setShowCreate(false);
       setOpen(false);
       await refresh();
+      broadcastTeamChange();
       router.push("/team");
       router.refresh();
     } catch (e) {
@@ -138,6 +148,7 @@ export function TeamSwitcher() {
       setShowJoin(false);
       setOpen(false);
       await refresh();
+      broadcastTeamChange();
       router.push("/team");
       router.refresh();
     } catch (e) {
