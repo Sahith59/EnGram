@@ -48,6 +48,7 @@ create table if not exists public.context_snapshots (
   rationale           text,
   embedding           vector(1536),
   content_hash        text,
+  identity_hash       text,
   source_url          text,
   created_at          timestamptz not null default now(),
   updated_at          timestamptz not null default now()
@@ -56,6 +57,10 @@ create table if not exists public.context_snapshots (
 create index if not exists idx_context_snapshots_team_hash
   on public.context_snapshots(team_id, content_hash)
   where content_hash is not null;
+
+create index if not exists idx_context_snapshots_team_identity
+  on public.context_snapshots(team_id, identity_hash)
+  where identity_hash is not null;
 
 create index if not exists idx_context_snapshots_team_source_url
   on public.context_snapshots(team_id, source_url)

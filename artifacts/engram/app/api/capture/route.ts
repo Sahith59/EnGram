@@ -5,7 +5,7 @@ import { anthropic } from "@/lib/anthropic";
 import { corsOptions, withCors } from "@/lib/cors";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { ensureUserTeam } from "@/lib/team";
-import { hashConversation } from "@/lib/hash";
+import { hashConversation, hashConversationIdentity } from "@/lib/hash";
 
 export function OPTIONS(request: NextRequest) {
   return corsOptions(request);
@@ -99,9 +99,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // ----- Dedup BEFORE spending tokens on Claude -----
+  // ----- Dedup logic (two-tier) -----
+  // 1. content_hash: exact-match → no-op (no LLM call, no DB write)
+  // 2. identity_hash: same conversation, more content → UPDATE in place
+  //
+  // identity_hash is the hash of the first 1-2 messages, which doesn't
+  // change as the conversation grows. This collapses follow-up captures
+  // into the same row instead of creating duplicates.
   const contentHash = hashConversation(pairs);
-  const { data: existing } = await admin
+  const identityHash = hashConversationIdentity(pairs);
+
+  // Tier 1: exact content match → return as-is, zero work
+  const { data: exact } = await admin
     .from("context_snapshots")
     .select("id, title, summary")
     .eq("team_id", resolvedTeamId)
@@ -110,21 +119,56 @@ export async function POST(request: NextRequest) {
     .limit(1)
     .maybeSingle();
 
-  if (existing) {
+  if (exact) {
     return withCors(
       NextResponse.json(
         {
           success: true,
           duplicate: true,
-          id: existing.id,
-          title: existing.title,
-          summary: existing.summary,
+          id: exact.id,
+          title: exact.title,
+          summary: exact.summary,
           message: "Content unchanged — reused existing snapshot.",
         },
         { status: 200 }
       ),
       request
     );
+  }
+
+  // Tier 2: same conversation identity, possibly grown
+  const { data: sibling } = await admin
+    .from("context_snapshots")
+    .select("id, title, summary, raw_conversation, created_at")
+    .eq("team_id", resolvedTeamId)
+    .eq("identity_hash", identityHash)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const willUpdateExisting = !!sibling;
+  if (sibling) {
+    const oldPairCount = Array.isArray(sibling.raw_conversation)
+      ? sibling.raw_conversation.length
+      : 0;
+    if (oldPairCount >= pairs.length) {
+      // Existing has equal-or-more content — return it, don't downgrade
+      return withCors(
+        NextResponse.json(
+          {
+            success: true,
+            duplicate: true,
+            id: sibling.id,
+            title: sibling.title,
+            summary: sibling.summary,
+            message: "Existing snapshot already has this content.",
+          },
+          { status: 200 }
+        ),
+        request
+      );
+    }
+    // Otherwise we'll re-run Claude on the full longer content and UPDATE.
   }
 
   // ----- Summarize via Claude -----
@@ -222,22 +266,57 @@ Captured: ${new Date().toISOString()}`,
     );
   }
 
-  // ----- Insert snapshot (use admin to bypass RLS scoping headaches) -----
+  // ----- Persist: UPDATE existing sibling, or INSERT new -----
+  const payload = {
+    team_id: resolvedTeamId,
+    created_by: userId,
+    title: extraction.title ?? "Untitled",
+    summary: extraction.summary ?? null,
+    ai_tool: tool as "chatgpt" | "claude" | "gemini" | "other",
+    raw_conversation: pairs,
+    tags: extraction.technologies ?? [],
+    decision: extraction.key_decisions ?? null,
+    rationale: extraction.context_md ?? null,
+    content_hash: contentHash,
+    identity_hash: identityHash,
+    source_url: url ?? null,
+  };
+
+  if (willUpdateExisting && sibling) {
+    const { data: updated, error: updateError } = await admin
+      .from("context_snapshots")
+      .update({ ...payload, updated_at: new Date().toISOString() })
+      .eq("id", sibling.id)
+      .select("id, title, summary")
+      .single();
+
+    if (updateError) {
+      console.error("DB update failed:", updateError);
+      return withCors(
+        NextResponse.json({ error: "Failed to update snapshot" }, { status: 500 }),
+        request
+      );
+    }
+
+    return withCors(
+      NextResponse.json(
+        {
+          success: true,
+          updated: true,
+          id: updated.id,
+          title: updated.title,
+          summary: updated.summary,
+          message: "Existing snapshot updated with new conversation content.",
+        },
+        { status: 200 }
+      ),
+      request
+    );
+  }
+
   const { data: snapshot, error: insertError } = await admin
     .from("context_snapshots")
-    .insert({
-      team_id: resolvedTeamId,
-      created_by: userId,
-      title: extraction.title ?? "Untitled",
-      summary: extraction.summary ?? null,
-      ai_tool: tool as "chatgpt" | "claude" | "gemini" | "other",
-      raw_conversation: pairs,
-      tags: extraction.technologies ?? [],
-      decision: extraction.key_decisions ?? null,
-      rationale: extraction.context_md ?? null,
-      content_hash: contentHash,
-      source_url: url ?? null,
-    })
+    .insert(payload)
     .select("id, title, summary")
     .single();
 

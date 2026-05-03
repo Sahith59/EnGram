@@ -242,6 +242,19 @@
         return resp;
       }
 
+      // Server may have UPDATED an existing snapshot (same conversation grew)
+      // — show a subtle "updated" toast on manual capture, silent otherwise.
+      if (resp.data?.updated) {
+        if (verbose) {
+          toast({
+            kind: "ok",
+            title: resp.data?.title ?? "Snapshot updated",
+            body: "Added new turns to this conversation.",
+          });
+        }
+        return resp;
+      }
+
       if (verbose || reason === "limit") {
         toast({
           kind: "ok",
