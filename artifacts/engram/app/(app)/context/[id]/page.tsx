@@ -11,6 +11,8 @@ import {
   Check,
   ClipboardCopy,
   Loader2,
+  FileText,
+  X,
 } from "lucide-react";
 import { ToolBadge } from "@/components/context/ToolBadge";
 import { formatRelativeTime, cn } from "@/lib/utils";
@@ -32,6 +34,52 @@ export default function ContextDetailPage() {
   const [tab, setTab] = useState<TabId>("summary");
   const [copied, setCopied] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [adrOpen, setAdrOpen] = useState(false);
+  const [adrLoading, setAdrLoading] = useState(false);
+  const [adrMarkdown, setAdrMarkdown] = useState<string | null>(null);
+  const [adrFilename, setAdrFilename] = useState<string>("decision.md");
+  const [adrError, setAdrError] = useState<string | null>(null);
+  const [adrCopied, setAdrCopied] = useState(false);
+
+  async function generateAdr() {
+    setAdrOpen(true);
+    setAdrError(null);
+    setAdrMarkdown(null);
+    setAdrLoading(true);
+    try {
+      const res = await fetch(`/api/contexts/${id}/adr?format=json`);
+      const j = await res.json();
+      if (!res.ok) {
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      setAdrMarkdown(j.markdown);
+      setAdrFilename(j.filename || "decision.md");
+    } catch (e) {
+      setAdrError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAdrLoading(false);
+    }
+  }
+
+  async function copyAdr() {
+    if (!adrMarkdown) return;
+    await navigator.clipboard.writeText(adrMarkdown);
+    setAdrCopied(true);
+    setTimeout(() => setAdrCopied(false), 1500);
+  }
+
+  function downloadAdr() {
+    if (!adrMarkdown) return;
+    const blob = new Blob([adrMarkdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = adrFilename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
 
   useEffect(() => {
     fetch(`/api/contexts/${id}`)
@@ -139,6 +187,14 @@ export default function ContextDetailPage() {
             download
           </button>
           <button
+            onClick={generateAdr}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-mono text-engram-light border border-engram/40 bg-engram/5 hover:bg-engram/10 hover:border-engram/60 transition-colors"
+            title="Generate a clean Architecture Decision Record from this snapshot"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            export as ADR
+          </button>
+          <button
             onClick={del}
             disabled={deleting}
             className="ml-auto inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-xs font-mono text-rose-400 border border-rose-500/30 hover:bg-rose-500/10 transition-colors"
@@ -188,6 +244,98 @@ export default function ContextDetailPage() {
           </motion.div>
         </AnimatePresence>
       </motion.div>
+
+      <AnimatePresence>
+        {adrOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setAdrOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.97, y: 8 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-3xl max-h-[85vh] flex flex-col rounded-xl border border-gh-border bg-gh-bg shadow-2xl overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 px-5 py-3.5 border-b border-gh-border">
+                <FileText className="h-4 w-4 text-engram-light" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-gh-text">
+                    Architecture Decision Record
+                  </div>
+                  <div className="text-[11px] font-mono text-gh-muted truncate">
+                    {adrFilename}
+                  </div>
+                </div>
+                {adrMarkdown && !adrLoading && (
+                  <>
+                    <button
+                      onClick={copyAdr}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-mono text-gh-text border border-gh-border hover:border-gh-muted transition-colors"
+                    >
+                      {adrCopied ? (
+                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      ) : (
+                        <ClipboardCopy className="h-3.5 w-3.5" />
+                      )}
+                      {adrCopied ? "copied" : "copy"}
+                    </button>
+                    <button
+                      onClick={downloadAdr}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-mono text-gh-text border border-gh-border hover:border-gh-muted transition-colors"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      download
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={() => setAdrOpen(false)}
+                  className="p-1.5 rounded-md text-gh-muted hover:text-gh-text hover:bg-gh-canvas transition-colors"
+                  aria-label="Close"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-auto p-5">
+                {adrLoading && (
+                  <div className="flex flex-col items-center justify-center py-16 gap-3 text-gh-muted">
+                    <Loader2 className="h-6 w-6 animate-spin text-engram-light" />
+                    <p className="text-sm">Generating decision record…</p>
+                    <p className="text-xs font-mono">
+                      Claude is synthesizing context · decision · consequences
+                    </p>
+                  </div>
+                )}
+                {adrError && (
+                  <div className="rounded-md border border-rose-500/30 bg-rose-500/5 p-4 text-sm text-rose-200">
+                    <p className="font-medium mb-1">Couldn&apos;t generate ADR</p>
+                    <p className="text-xs font-mono break-all">{adrError}</p>
+                    <button
+                      onClick={generateAdr}
+                      className="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-mono text-rose-100 border border-rose-500/40 hover:bg-rose-500/10 transition-colors"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {adrMarkdown && !adrLoading && (
+                  <pre className="text-sm text-gh-text font-mono leading-relaxed whitespace-pre-wrap break-words">
+                    {adrMarkdown}
+                  </pre>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
