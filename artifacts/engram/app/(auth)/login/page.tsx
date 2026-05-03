@@ -1,18 +1,32 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { Auth } from "@supabase/auth-ui-react";
 import { ThemeSupa } from "@supabase/auth-ui-shared";
-import { GitBranch, ArrowLeft, AlertTriangle } from "lucide-react";
+import { GitBranch, ArrowLeft, AlertTriangle, XCircle } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+function humanizeAuthError(code: string | null, description: string | null): string {
+  if (code === "otp_expired")
+    return "That sign-in link has expired. Request a new one below — links are only valid for one hour.";
+  if (code === "access_denied")
+    return "Sign in was cancelled or denied. Try again below.";
+  if (description) return description.replace(/\+/g, " ");
+  return "Something went wrong during sign in. Please try again.";
+}
+
 export default function LoginPage() {
   const router = useRouter();
+  const search = useSearchParams();
   const [configError, setConfigError] = useState<string | null>(null);
+
+  const errorCode = search.get("error_code") ?? search.get("error");
+  const errorDescription = search.get("error_description");
+  const authError = errorCode ? humanizeAuthError(errorCode, errorDescription) : null;
 
   const supabase = useMemo<SupabaseClient | null>(() => {
     try {
@@ -78,6 +92,17 @@ export default function LoginPage() {
               Git for AI decisions
             </p>
           </div>
+
+          {authError && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-4 flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3"
+            >
+              <XCircle className="h-4 w-4 text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-red-200 leading-relaxed">{authError}</p>
+            </motion.div>
+          )}
 
           <div className="rounded-xl border border-gh-border bg-gh-canvas p-6 shadow-xl shadow-black/30">
             {configError || !supabase ? (
