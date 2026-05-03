@@ -233,17 +233,16 @@ function ApiTab() {
 function TeamTab() {
   return (
     <Card title="Team" desc="Manage your team members and invitations.">
-      <div className="rounded-md border border-gh-border bg-gh-bg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gh-border flex items-center justify-between">
-          <span className="text-[11px] font-mono uppercase text-gh-muted">members</span>
-          <button className="text-xs text-engram-light hover:text-engram-light/80 transition-colors">
-            + Invite
-          </button>
-        </div>
-        <div className="p-4 text-sm text-gh-muted">
-          You are the only member. Invite teammates to share captured contexts.
-        </div>
-      </div>
+      <p className="text-sm text-gh-text leading-relaxed">
+        Team management lives on its own page — view members, generate invite
+        links, and revoke access there.
+      </p>
+      <a
+        href="/team"
+        className="mt-4 inline-flex items-center gap-2 text-sm text-engram-light hover:underline"
+      >
+        Open team page →
+      </a>
     </Card>
   );
 }

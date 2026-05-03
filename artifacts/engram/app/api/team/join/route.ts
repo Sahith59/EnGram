@@ -64,6 +64,26 @@ export async function POST(req: NextRequest) {
 
   const oldTeamId = callerProfile.team_id;
 
+  // 0. Atomically claim a use slot via Postgres RPC. The function does the
+  // validity check + use_count increment in one statement — concurrent
+  // callers race for the slot at the DB level, so we cannot over-claim
+  // past max_uses. Returns null if revoked/expired/exhausted in the
+  // moment between the earlier preview check and the actual claim.
+  const { data: claimedTeamId, error: claimErr } = await admin.rpc(
+    "claim_team_invite",
+    { p_code: code }
+  );
+  if (claimErr) {
+    console.error("[join] claim_team_invite rpc failed:", claimErr);
+    return NextResponse.json({ error: "Failed to claim invite" }, { status: 500 });
+  }
+  if (!claimedTeamId) {
+    return NextResponse.json(
+      { error: "This invite was just used up by someone else. Ask for a new link." },
+      { status: 409 }
+    );
+  }
+
   // 1. Move caller's snapshots to the new team (preserve visibility).
   if (oldTeamId) {
     await admin
@@ -103,11 +123,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 4. Increment the invite's use count.
-  await admin
-    .from("team_invites")
-    .update({ use_count: invite.use_count + 1 })
-    .eq("id", invite.id);
+  // (use_count was atomically claimed at step 0)
 
   const { data: newTeam } = await admin
     .from("teams")
