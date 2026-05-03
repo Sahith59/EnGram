@@ -47,49 +47,22 @@ export async function GET(
   // RLS will already block disallowed rows (personal rows you don't own;
   // team rows from a different team) but we re-check application-side so we
   // can branch on visibility for redaction.
-  // NOTE: `visibility` column is optional — migrations 0003/0004 may not yet
-  // be applied. Probe with a graceful fallback so the route stays robust.
-  type SnapshotRow = {
-    title: string | null;
-    rationale: string | null;
-    summary: string | null;
-    decision: string | null;
-    tags: string[] | null;
-    ai_tool: string;
-    created_at: string;
-    raw_conversation: { role: string; content: string }[] | null;
+  const { data: row, error } = await supabase
+    .from("context_snapshots")
+    .select(
+      "title, rationale, summary, decision, tags, ai_tool, created_at, raw_conversation, created_by, team_id, visibility"
+    )
+    .eq("id", params.id)
+    .single();
+
+  if (error || !row) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  const safeRow = row as typeof row & {
     created_by: string;
     team_id: string;
     visibility?: string | null;
   };
-  const baseCols =
-    "title, rationale, summary, decision, tags, ai_tool, created_at, raw_conversation, created_by, team_id";
-
-  let row: SnapshotRow | null = null;
-  {
-    const { data, error } = await supabase
-      .from("context_snapshots")
-      .select(`${baseCols}, visibility`)
-      .eq("id", params.id)
-      .single();
-    if (data) {
-      row = data as unknown as SnapshotRow;
-    } else if (error?.code === "42703") {
-      const fb = await supabase
-        .from("context_snapshots")
-        .select(baseCols)
-        .eq("id", params.id)
-        .single();
-      if (fb.data) {
-        row = { ...(fb.data as unknown as Omit<SnapshotRow, "visibility">), visibility: null };
-      }
-    }
-  }
-
-  if (!row) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-  const safeRow: SnapshotRow = row;
 
   const visibility = safeRow.visibility ?? "personal";
   const isCreator = safeRow.created_by === user.id;

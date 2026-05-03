@@ -102,70 +102,7 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  let { data, error, count } = await query;
-
-  // Graceful degrade: if the visibility column doesn't exist yet
-  // (migration 0004 not applied), team mode is effectively "not unlocked".
-  // - team scope → return EMPTY (no chats have been explicitly shared).
-  // - personal scope → fall back to "every chat I've created" so the
-  //   dashboard keeps working until the SQL is run.
-  if (error && /visibility|author_handle/i.test(error.message ?? "")) {
-    if (scope === "team") {
-      return NextResponse.json({
-        scope,
-        data: [],
-        pagination: { page, limit, total: 0, pages: 0 },
-        teamUnlocked: false,
-      });
-    }
-    let fallback = supabase
-      .from("context_snapshots")
-      .select(
-        "id, title, summary, ai_tool, tags, project, decision, created_by, created_at",
-        { count: "exact" }
-      )
-      .eq("team_id", profile.team_id)
-      .eq("created_by", user.id)
-      .order("created_at", { ascending: false })
-      .range(offset, offset + limit - 1);
-    if (tool) fallback = fallback.eq("ai_tool", tool);
-    if (search) {
-      const tokens = search
-        .toLowerCase()
-        .replace(/[^a-z0-9 ]/g, " ")
-        .split(/\s+/)
-        .filter((w) => w.length > 1)
-        .slice(0, 6);
-      const safeFallback = search
-        .toLowerCase()
-        .replace(/[^a-z0-9 ]/g, " ")
-        .trim()
-        .slice(0, 80);
-      if (tokens.length > 0) {
-        fallback = fallback.or(
-          tokens
-            .flatMap((t) => [
-              `title.ilike.%${t}%`,
-              `summary.ilike.%${t}%`,
-              `decision.ilike.%${t}%`,
-            ])
-            .join(",")
-        );
-      } else if (safeFallback) {
-        fallback = fallback.or(
-          `title.ilike.%${safeFallback}%,summary.ilike.%${safeFallback}%,decision.ilike.%${safeFallback}%`
-        );
-      }
-    }
-    const fb = await fallback;
-    data = (fb.data ?? []).map((r) => ({
-      ...r,
-      visibility: "personal" as const,
-      author_handle: null as string | null,
-    })) as typeof data;
-    count = fb.count;
-    error = fb.error;
-  }
+  const { data, error, count } = await query;
 
   if (error) {
     console.error("contexts list error:", error);

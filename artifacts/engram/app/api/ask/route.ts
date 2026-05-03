@@ -188,23 +188,6 @@ export async function POST(request: NextRequest) {
     }
     const { data, error } = await q;
     if (error) {
-      // Graceful fallback if migration not applied:
-      // - team scope is "not unlocked yet" → return empty.
-      // - personal scope → search the asker's own captures.
-      if (/visibility|author_handle/i.test(error.message ?? "")) {
-        if (s === "team") return [];
-        const legacy = await supabase
-          .from("context_snapshots")
-          .select(
-            "id, title, summary, decision, rationale, ai_tool, tags, created_at, created_by"
-          )
-          .eq("team_id", profile!.team_id)
-          .eq("created_by", user!.id)
-          .or(orClause)
-          .order("created_at", { ascending: false })
-          .limit(8);
-        return (legacy.data ?? []) as SourceRow[];
-      }
       console.error("ask scoped query error:", error);
       return [];
     }
@@ -233,22 +216,15 @@ export async function POST(request: NextRequest) {
   const missingSemanticIds = [...semanticIds].filter((id) => !knownIds.has(id));
   let semanticRows: SourceRow[] = [];
   if (missingSemanticIds.length > 0) {
-    let q = supabase
+    const { data, error } = await supabase
       .from("context_snapshots")
       .select(
         "id, title, summary, decision, rationale, ai_tool, tags, created_at, visibility, author_handle, created_by"
       )
       .in("id", missingSemanticIds);
-    const { data, error } = await q;
-    if (error && /visibility|author_handle/i.test(error.message ?? "")) {
-      const legacy = await supabase
-        .from("context_snapshots")
-        .select(
-          "id, title, summary, decision, rationale, ai_tool, tags, created_at, created_by"
-        )
-        .in("id", missingSemanticIds);
-      semanticRows = (legacy.data ?? []) as SourceRow[];
-    } else if (!error) {
+    if (error) {
+      console.warn("[ask] semantic row fetch failed:", error.message);
+    } else {
       semanticRows = (data ?? []) as SourceRow[];
     }
     // Apply scope filter in app (the RPC was team-only).

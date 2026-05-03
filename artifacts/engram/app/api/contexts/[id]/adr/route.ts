@@ -57,52 +57,19 @@ export async function GET(
     return NextResponse.json({ error: "User has no team" }, { status: 400 });
   }
 
-  // NOTE: `visibility` column is optional — migrations 0003/0004 may not have
-  // been applied yet. We probe for it with a defensive select and fall back
-  // to "personal" when the column is absent so the route stays robust.
-  type SnapshotRow = {
-    id: string;
-    title: string | null;
-    summary: string | null;
-    decision: string | null;
-    rationale: string | null;
-    tags: string[] | null;
-    ai_tool: string;
-    created_at: string;
-    raw_conversation: { role: string; content: string }[] | null;
-    created_by: string;
-    team_id: string;
-    visibility?: string | null;
-  };
-  const baseCols =
-    "id, title, summary, decision, rationale, tags, ai_tool, created_at, raw_conversation, created_by, team_id";
+  const { data: row, error } = await supabase
+    .from("context_snapshots")
+    .select(
+      "id, title, summary, decision, rationale, tags, ai_tool, created_at, raw_conversation, created_by, team_id, visibility"
+    )
+    .eq("id", params.id)
+    .single();
 
-  let row: SnapshotRow | null = null;
-  {
-    const { data, error } = await supabase
-      .from("context_snapshots")
-      .select(`${baseCols}, visibility`)
-      .eq("id", params.id)
-      .single();
-    if (data) {
-      row = data as unknown as SnapshotRow;
-    } else if (error?.code === "42703") {
-      const fb = await supabase
-        .from("context_snapshots")
-        .select(baseCols)
-        .eq("id", params.id)
-        .single();
-      if (fb.data) {
-        row = { ...(fb.data as unknown as Omit<SnapshotRow, "visibility">), visibility: null };
-      }
-    }
-  }
-
-  if (!row) {
+  if (error || !row) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const visibility = row.visibility ?? "personal";
+  const visibility = (row.visibility as string | null | undefined) ?? "personal";
   const isCreator = row.created_by === user.id;
   const isSameTeam = row.team_id === profile.team_id;
 
