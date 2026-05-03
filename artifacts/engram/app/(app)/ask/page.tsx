@@ -4,20 +4,25 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { QueryInput } from "@/components/ask/QueryInput";
 import { AnswerCard, type AnswerSource } from "@/components/ask/AnswerCard";
-import { Sparkles } from "lucide-react";
+import { Sparkles, User, Users, Globe } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface QueryRecord {
   question: string;
   answer: string;
   sources: AnswerSource[];
   confidence?: number | null;
+  scope?: "personal" | "team" | "all";
   ts: number;
 }
+
+type Scope = "personal" | "team" | "all";
 
 export default function AskPage() {
   const [history, setHistory] = useState<QueryRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scope, setScope] = useState<Scope>("personal");
 
   async function ask(question: string) {
     setLoading(true);
@@ -26,7 +31,7 @@ export default function AskPage() {
       const res = await fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question, scope }),
       });
       const data = await res.json();
       if (data.error) {
@@ -38,6 +43,7 @@ export default function AskPage() {
             answer: data.answer,
             sources: data.sources ?? [],
             confidence: data.confidence,
+            scope: data.scope ?? scope,
             ts: Date.now(),
           },
           ...h,
@@ -65,7 +71,7 @@ export default function AskPage() {
           </span>
         </div>
         <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-gh-text mb-3">
-          Search your team&apos;s decisions.
+          Search your decisions.
         </h1>
         <p className="text-sm md:text-base text-gh-muted max-w-md mx-auto">
           Plain English. Cited answers. From every captured AI conversation.
@@ -73,6 +79,28 @@ export default function AskPage() {
       </motion.div>
 
       <QueryInput onAsk={ask} loading={loading} />
+
+      <div className="max-w-2xl mx-auto mt-4 flex items-center justify-center gap-1 text-[11px] font-mono uppercase tracking-wider">
+        <span className="text-gh-muted mr-2">search in:</span>
+        <ScopePill
+          active={scope === "personal"}
+          onClick={() => setScope("personal")}
+          icon={<User className="h-3 w-3" />}
+          label="my contexts"
+        />
+        <ScopePill
+          active={scope === "team"}
+          onClick={() => setScope("team")}
+          icon={<Users className="h-3 w-3" />}
+          label="team"
+        />
+        <ScopePill
+          active={scope === "all"}
+          onClick={() => setScope("all")}
+          icon={<Globe className="h-3 w-3" />}
+          label="all"
+        />
+      </div>
 
       <AnimatePresence>
         {error && (
@@ -101,5 +129,33 @@ export default function AskPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function ScopePill({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-all",
+        active
+          ? "bg-engram/15 text-engram-light shadow-[inset_0_0_0_1px_rgba(124,58,237,0.4)]"
+          : "text-gh-muted hover:text-gh-text"
+      )}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

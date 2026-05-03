@@ -32,6 +32,7 @@ export async function POST(request: NextRequest) {
     url: string;
     userId?: string;
     teamId?: string;
+    mode?: "personal" | "team";
   };
   try {
     body = await request.json();
@@ -74,6 +75,10 @@ export async function POST(request: NextRequest) {
   }
 
   const { pairs, tool, url, teamId } = body;
+  // Default to 'personal' so existing extensions (which don't send mode) keep
+  // working with the safest possible scope (private to the user).
+  const visibility: "personal" | "team" =
+    body.mode === "team" ? "team" : "personal";
   if (!pairs || !Array.isArray(pairs) || pairs.length === 0 || !tool) {
     return withCors(
       NextResponse.json({ error: "Missing required fields" }, { status: 400 }),
@@ -104,19 +109,26 @@ export async function POST(request: NextRequest) {
   const identityHash = hashConversationIdentity(pairs);
 
   // Tier 1: exact content match → return as-is, zero work
+  // Scoped to (team_id, created_by, visibility) so a personal capture and a
+  // team capture of the same chat by the same user are distinct rows.
   let exact: { id: string; title: string; summary: string | null } | null = null;
   try {
-    const r = await admin
+    let q = admin
       .from("context_snapshots")
       .select("id, title, summary")
       .eq("team_id", resolvedTeamId)
-      .eq("content_hash", contentHash)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    exact = r.data;
+      .eq("created_by", userId)
+      .eq("content_hash", contentHash);
+    // Try with visibility filter; if column missing, second try drops it.
+    try {
+      const r = await q.eq("visibility", visibility).order("created_at", { ascending: false }).limit(1).maybeSingle();
+      exact = r.data;
+    } catch {
+      const r = await q.order("created_at", { ascending: false }).limit(1).maybeSingle();
+      exact = r.data;
+    }
   } catch {
-    // Column probably doesn't exist — migration not applied. Skip tier 1.
+    // content_hash column probably missing — skip tier 1.
   }
 
   if (exact) {
@@ -137,23 +149,28 @@ export async function POST(request: NextRequest) {
   }
 
   // Tier 2: same conversation identity, possibly grown
-  let sibling: {
+  type Sibling = {
     id: string;
     title: string;
     summary: string | null;
     raw_conversation: unknown;
     created_at: string;
-  } | null = null;
+  };
+  let sibling: Sibling | null = null;
   try {
-    const r = await admin
+    const base = admin
       .from("context_snapshots")
       .select("id, title, summary, raw_conversation, created_at")
       .eq("team_id", resolvedTeamId)
-      .eq("identity_hash", identityHash)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    sibling = r.data as typeof sibling;
+      .eq("created_by", userId)
+      .eq("identity_hash", identityHash);
+    try {
+      const r = await base.eq("visibility", visibility).order("created_at", { ascending: false }).limit(1).maybeSingle();
+      sibling = (r.data as Sibling | null) ?? null;
+    } catch {
+      const r = await base.order("created_at", { ascending: false }).limit(1).maybeSingle();
+      sibling = (r.data as Sibling | null) ?? null;
+    }
   } catch {
     // identity_hash column doesn't exist — skip tier 2 dedup.
   }
@@ -313,10 +330,27 @@ Call the save_handoff_brief tool with the structured result.`,
     decision: extraction.key_decisions ?? null,
     rationale: extraction.context_md ?? null,
   };
+  // Resolve a friendly author handle for shared (team) snapshots so other
+  // members can see who captured each one without exposing emails.
+  let authorHandle: string | null = null;
+  if (visibility === "team") {
+    const { data: prof } = await admin
+      .from("profiles")
+      .select("full_name, email")
+      .eq("id", userId)
+      .maybeSingle();
+    authorHandle =
+      prof?.full_name?.trim() ||
+      (prof?.email ? prof.email.split("@")[0] : null) ||
+      "anonymous";
+  }
+
   const optionalDedupFields = {
     content_hash: contentHash,
     identity_hash: identityHash,
     source_url: url ?? null,
+    visibility,
+    author_handle: authorHandle,
   };
 
   /**

@@ -2,9 +2,10 @@
 
 import { Suspense, useState } from "react";
 import { motion } from "framer-motion";
-import { Search } from "lucide-react";
+import { Search, User, Users } from "lucide-react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { ContextTimeline } from "@/components/context/ContextTimeline";
+import { cn } from "@/lib/utils";
 
 export default function DashboardPage() {
   return (
@@ -22,6 +23,14 @@ function DashboardInner() {
   const params = useSearchParams();
   const initialSearch = params.get("search") ?? "";
   const [search, setSearch] = useState(initialSearch);
+  const scope: "personal" | "team" =
+    params.get("scope") === "team" ? "team" : "personal";
+
+  function setScope(next: "personal" | "team") {
+    const p = new URLSearchParams(params.toString());
+    p.set("scope", next);
+    router.replace(`${pathname}?${p.toString()}`);
+  }
 
   function onSearch(v: string) {
     setSearch(v);
@@ -40,14 +49,37 @@ function DashboardInner() {
         className="mb-8"
       >
         <p className="text-[11px] font-mono uppercase tracking-wider text-engram-light mb-2">
-          your team&apos;s memory
+          {scope === "team" ? "your team's shared memory" : "your private memory"}
         </p>
         <h1 className="text-3xl font-semibold tracking-tight text-gh-text mb-1">
           Dashboard
         </h1>
         <p className="text-sm text-gh-muted">
-          Every AI conversation your team has captured, organized by recency.
+          {scope === "team"
+            ? "Snapshots your teammates have explicitly shared. Briefs only — original chats stay private."
+            : "Your personal AI conversations. Visible only to you."}
         </p>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.03 }}
+        className="inline-flex rounded-lg border border-gh-border bg-gh-canvas p-1 mb-5"
+        role="tablist"
+      >
+        <ScopeTab
+          active={scope === "personal"}
+          onClick={() => setScope("personal")}
+          icon={<User className="h-3.5 w-3.5" />}
+          label="My contexts"
+        />
+        <ScopeTab
+          active={scope === "team"}
+          onClick={() => setScope("team")}
+          icon={<Users className="h-3.5 w-3.5" />}
+          label="Team contexts"
+        />
       </motion.div>
 
       <motion.div
@@ -66,7 +98,37 @@ function DashboardInner() {
         />
       </motion.div>
 
-      <ContextTimeline />
+      <ContextTimeline scope={scope} />
     </>
+  );
+}
+
+function ScopeTab({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+        active
+          ? "bg-engram/15 text-engram-light shadow-[inset_0_0_0_1px_rgba(124,58,237,0.4)]"
+          : "text-gh-muted hover:text-gh-text"
+      )}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

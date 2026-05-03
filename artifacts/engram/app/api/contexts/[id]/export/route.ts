@@ -7,6 +7,13 @@ import { isSupabaseConfigured } from "@/lib/supabase/config";
  *  - brief (default): the AI-generated handoff brief markdown
  *  - handoff: brief wrapped with a starter prompt for pasting into a new AI chat
  *  - raw: verbatim conversation transcript only
+ *
+ * Privacy rules (must mirror /api/contexts/[id]):
+ *   - Personal rows: only the creator can read in any mode.
+ *   - Team rows: any team member can read brief/handoff (sans raw turns),
+ *     but `mode=raw` and the verbatim tail in `mode=handoff` are reserved
+ *     to the original author. Non-author team members get a redacted
+ *     handoff (no raw turns) and a 403 on raw.
  */
 export async function GET(
   request: NextRequest,
@@ -36,55 +43,99 @@ export async function GET(
     return NextResponse.json({ error: "User has no team" }, { status: 400 });
   }
 
+  // Fetch including ownership + visibility so we can enforce scoped access.
+  // RLS will already block disallowed rows (personal rows you don't own;
+  // team rows from a different team) but we re-check application-side so we
+  // can branch on visibility for redaction.
   const { data, error } = await supabase
     .from("context_snapshots")
     .select(
-      "title, rationale, summary, decision, tags, ai_tool, created_at, raw_conversation"
+      "title, rationale, summary, decision, tags, ai_tool, created_at, raw_conversation, created_by, team_id, visibility"
     )
     .eq("id", params.id)
-    .eq("team_id", profile.team_id)
     .single();
 
   if (error || !data) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
+  const row = data as typeof data & {
+    created_by: string;
+    team_id: string;
+    visibility?: string | null;
+  };
+  const visibility = (row.visibility as string | undefined) ?? "personal";
+  const isCreator = row.created_by === user.id;
+  const isSameTeam = row.team_id === profile.team_id;
+
+  // Defensive auth checks (RLS should already prevent these)
+  if (visibility === "personal" && !isCreator) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  if (visibility === "team" && !isSameTeam) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
   const mode = request.nextUrl.searchParams.get("mode") ?? "brief";
   const targetTool = request.nextUrl.searchParams.get("target") ?? "the new AI";
 
+  // Raw transcripts NEVER leave the author's hands when the row is shared.
+  const canSeeRaw = isCreator;
+
+  const titleSafe = (row.title ?? "untitled").toString();
+  const tagsArr = (row.tags as string[] | null) ?? [];
+
   const brief =
-    data.rationale ??
-    `# ${data.title}
+    row.rationale ??
+    `# ${titleSafe}
 
 ## Summary
-${data.summary ?? "_No summary available._"}
+${row.summary ?? "_No summary available._"}
 
 ## Key Decisions
-${data.decision ?? "_No decisions recorded._"}
+${row.decision ?? "_No decisions recorded._"}
 
 ## Technologies
-${(data.tags as string[]).length > 0 ? (data.tags as string[]).map((t: string) => `- ${t}`).join("\n") : "_None identified._"}
+${tagsArr.length > 0 ? tagsArr.map((t) => `- ${t}`).join("\n") : "_None identified._"}
 
 ---
-*Captured from ${data.ai_tool} on ${new Date(data.created_at).toLocaleDateString()}*
+*Captured from ${row.ai_tool} on ${new Date(row.created_at).toLocaleDateString()}*
 `;
 
-  // Build the starter prompt that wraps the brief with anti-hallucination scaffolding.
   function buildHandoffPrompt() {
-    const rawPairs = (data.raw_conversation as
-      | { role: string; content: string }[]
-      | null) ?? [];
-    const tail = rawPairs
-      .slice(-4)
-      .map(
-        (p) =>
-          `> **${p.role.toUpperCase()}:** ${p.content.slice(0, 1500).replace(/\n/g, "\n> ")}`
-      )
-      .join("\n>\n");
+    const rawPairs =
+      (row.raw_conversation as { role: string; content: string }[] | null) ?? [];
+    const tail = canSeeRaw
+      ? rawPairs
+          .slice(-4)
+          .map(
+            (p) =>
+              `> **${p.role.toUpperCase()}:** ${p.content.slice(0, 1500).replace(/\n/g, "\n> ")}`
+          )
+          .join("\n>\n")
+      : "";
+
+    const verbatimSection = canSeeRaw
+      ? `## 📜 Verbatim Recent Exchanges (Ground Truth)
+
+These are the last few raw turns of the original conversation, exactly as they happened. Treat them as authoritative over your own paraphrasing.
+
+${tail || "_(none captured)_"}
+
+---
+
+`
+      : `## 📜 Verbatim Recent Exchanges
+
+_Redacted — the verbatim transcript stays private to the original author of this team snapshot._
+
+---
+
+`;
 
     return `# 🔁 ENGRAM Project Handoff
 
-I'm resuming a project that was previously discussed in **${data.ai_tool}**. The full handoff brief and verbatim recent context are below. Your job is to **pick up exactly where we left off without hallucinating or inventing details**.
+I'm resuming a project that was previously discussed in **${row.ai_tool}**. The full handoff brief is below. Your job is to **pick up exactly where we left off without hallucinating or inventing details**.
 
 ## ✋ READ THIS FIRST — Receiving AI Instructions
 
@@ -100,15 +151,7 @@ ${brief}
 
 ---
 
-## 📜 Verbatim Recent Exchanges (Ground Truth)
-
-These are the last few raw turns of the original conversation, exactly as they happened. Treat them as authoritative over your own paraphrasing.
-
-${tail || "_(none captured)_"}
-
----
-
-*Handoff prepared by ENGRAM · captured ${new Date(data.created_at).toLocaleString()} · target: ${targetTool}*
+${verbatimSection}*Handoff prepared by ENGRAM · captured ${new Date(row.created_at).toLocaleString()} · target: ${targetTool}*
 `;
   }
 
@@ -116,20 +159,28 @@ ${tail || "_(none captured)_"}
   let filename: string;
   if (mode === "handoff") {
     body = buildHandoffPrompt();
-    filename = `${data.title.replace(/[^a-z0-9]/gi, "-").toLowerCase().slice(0, 60)}-handoff.md`;
+    filename = `${titleSafe.replace(/[^a-z0-9]/gi, "-").toLowerCase().slice(0, 60)}-handoff.md`;
   } else if (mode === "raw") {
-    const rawPairs = (data.raw_conversation as
-      | { role: string; content: string }[]
-      | null) ?? [];
+    if (!canSeeRaw) {
+      return NextResponse.json(
+        {
+          error:
+            "Raw transcript is private to the original author of this team snapshot.",
+        },
+        { status: 403 }
+      );
+    }
+    const rawPairs =
+      (row.raw_conversation as { role: string; content: string }[] | null) ?? [];
     body =
-      `# ${data.title} — Raw Transcript\n\n` +
+      `# ${titleSafe} — Raw Transcript\n\n` +
       rawPairs
         .map((p) => `## ${p.role.toUpperCase()}\n\n${p.content}`)
         .join("\n\n---\n\n");
-    filename = `${data.title.replace(/[^a-z0-9]/gi, "-").toLowerCase().slice(0, 60)}-transcript.md`;
+    filename = `${titleSafe.replace(/[^a-z0-9]/gi, "-").toLowerCase().slice(0, 60)}-transcript.md`;
   } else {
     body = brief;
-    filename = `${data.title.replace(/[^a-z0-9]/gi, "-").toLowerCase().slice(0, 60)}.md`;
+    filename = `${titleSafe.replace(/[^a-z0-9]/gi, "-").toLowerCase().slice(0, 60)}.md`;
   }
 
   return new NextResponse(body, {

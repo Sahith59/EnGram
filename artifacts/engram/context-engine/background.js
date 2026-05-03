@@ -107,6 +107,7 @@ async function capture(payload) {
         url: payload.url,
         userId: ident.user.id,
         teamId: ident.team_id,
+        mode: payload.mode === "team" ? "team" : "personal",
       }),
     });
 

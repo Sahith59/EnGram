@@ -125,7 +125,50 @@ document.getElementById("save-api").addEventListener("click", async () => {
   await send({ type: "DRAIN_QUEUE" });
 });
 
+// ----- Capture-mode toggle (Personal vs Team) -----
+const modeButtons = document.querySelectorAll(".mode-btn");
+const modeHint = document.getElementById("mode-hint");
+
+const MODE_HINTS = {
+  personal: "Private to you. Raw chat never shared.",
+  team: "Brief shared with team. Raw chat stays yours.",
+};
+
+function paintModeButtons(active) {
+  modeButtons.forEach((btn) => {
+    const isActive = btn.dataset.mode === active;
+    btn.classList.toggle("active", isActive);
+    btn.style.borderColor = isActive ? "var(--engram)" : "var(--border)";
+    btn.style.color = isActive ? "var(--text)" : "var(--muted)";
+    btn.style.background = isActive ? "#1c222b" : "var(--card)";
+  });
+  if (modeHint) modeHint.textContent = MODE_HINTS[active] || MODE_HINTS.personal;
+}
+
+async function loadCaptureMode() {
+  const { engram_capture_mode } = await chrome.storage.local.get(
+    "engram_capture_mode"
+  );
+  const mode = engram_capture_mode === "team" ? "team" : "personal";
+  paintModeButtons(mode);
+}
+
+modeButtons.forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const next = btn.dataset.mode === "team" ? "team" : "personal";
+    await chrome.storage.local.set({ engram_capture_mode: next });
+    paintModeButtons(next);
+    showToast(
+      next === "team"
+        ? "Team mode — briefs will be shared with your team."
+        : "Personal mode — captures stay private to you.",
+      "ok"
+    );
+  });
+});
+
 (async function init() {
   await refreshTabContext();
   await refreshIdentity();
+  await loadCaptureMode();
 })();

@@ -4,7 +4,43 @@ import { motion } from "framer-motion";
 import { Download, ArrowRight, Sparkles } from "lucide-react";
 import Link from "next/link";
 
-export function EmptyState() {
+export function EmptyState({
+  scope = "personal",
+}: {
+  scope?: "personal" | "team";
+}) {
+  if (scope === "team") {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.45 }}
+        className="rounded-xl border border-gh-border bg-gh-canvas px-8 py-14 text-center"
+      >
+        <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full border border-engram/30 bg-engram/10 mb-5">
+          <Sparkles className="h-3 w-3 text-engram-light" />
+          <span className="text-[11px] font-mono text-engram-light tracking-wide">
+            no shared snapshots
+          </span>
+        </div>
+        <h2 className="text-xl font-semibold text-gh-text mb-3">
+          Nobody on your team has shared yet.
+        </h2>
+        <p className="text-sm text-gh-muted max-w-md mx-auto mb-6">
+          Personal captures stay private. To put a snapshot here, switch the
+          extension&apos;s capture mode to <strong>Team</strong> before
+          capturing — only the brief is shared, never the raw chat.
+        </p>
+        <Link
+          href="/dashboard?scope=personal"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-md border border-gh-border bg-gh-bg hover:border-gh-muted text-sm text-gh-text transition-colors"
+        >
+          See my personal contexts
+          <ArrowRight className="h-3.5 w-3.5" />
+        </Link>
+      </motion.div>
+    );
+  }
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}

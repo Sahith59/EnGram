@@ -18,6 +18,8 @@ export interface ContextCardData {
   project: string | null;
   decision: string | null;
   created_at: string;
+  visibility?: "personal" | "team" | string | null;
+  author_handle?: string | null;
 }
 
 const continueTargets = [
@@ -158,6 +160,18 @@ export function ContextCard({
           <div className="flex items-start justify-between gap-4 mb-3">
             <div className="flex items-center gap-2 min-w-0">
               <ToolBadge tool={ctx.ai_tool} />
+              {ctx.visibility === "team" && (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-[10px] bg-engram/10 text-engram-light border border-engram/30"
+                  title={
+                    ctx.author_handle
+                      ? `Shared with team by ${ctx.author_handle}`
+                      : "Shared with team"
+                  }
+                >
+                  team{ctx.author_handle ? ` · ${ctx.author_handle}` : ""}
+                </span>
+              )}
               {ctx.project && (
                 <span className="font-mono text-[11px] text-gh-muted truncate">
                   ↳ {ctx.project}

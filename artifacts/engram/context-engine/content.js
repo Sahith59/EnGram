@@ -28,7 +28,20 @@
   ];
 
   const STORAGE_KEY = "engram_fingerprints"; // { [url]: { fp, ts } }
+  const MODE_KEY = "engram_capture_mode";    // 'personal' | 'team'
   const FINGERPRINT_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+  function getCaptureMode() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get([MODE_KEY], (res) => {
+          resolve(res?.[MODE_KEY] === "team" ? "team" : "personal");
+        });
+      } catch {
+        resolve("personal");
+      }
+    });
+  }
 
   // ----- State -----
   let lastCaptureAt = 0;
@@ -246,11 +259,13 @@
     lastCaptureAt = now;
     lastCaptureFingerprint = fp;
 
+    const mode = await getCaptureMode();
     const resp = await send({
       pairs,
       tool: TOOL,
       url: location.href,
       reason,
+      mode,
     });
 
     if (resp?.ok) {

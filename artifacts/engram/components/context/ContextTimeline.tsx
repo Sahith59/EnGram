@@ -7,7 +7,11 @@ import { ContextCard, ContextCardSkeleton, type ContextCardData } from "./Contex
 import { EmptyState } from "@/components/dashboard/EmptyState";
 import { AlertCircle } from "lucide-react";
 
-export function ContextTimeline() {
+export function ContextTimeline({
+  scope = "personal",
+}: {
+  scope?: "personal" | "team";
+}) {
   const searchParams = useSearchParams();
   const tool = searchParams.get("tool");
   const search = searchParams.get("search");
@@ -21,6 +25,7 @@ export function ContextTimeline() {
     setError(null);
 
     const params = new URLSearchParams();
+    params.set("scope", scope);
     if (tool) params.set("tool", tool);
     if (search) params.set("search", search);
 
@@ -44,7 +49,7 @@ export function ContextTimeline() {
     return () => {
       cancelled = true;
     };
-  }, [tool, search]);
+  }, [tool, search, scope]);
 
   if (items === null) {
     return (
@@ -67,7 +72,7 @@ export function ContextTimeline() {
   }
 
   if (items.length === 0) {
-    return <EmptyState />;
+    return <EmptyState scope={scope} />;
   }
 
   return (
@@ -75,6 +80,7 @@ export function ContextTimeline() {
       <div className="flex items-baseline justify-between mb-1">
         <div className="font-mono text-[11px] text-gh-muted uppercase tracking-wider">
           {items.length} {items.length === 1 ? "snapshot" : "snapshots"}
+          {scope === "team" && " · shared with team"}
           {tool && ` · ${tool}`}
         </div>
       </div>

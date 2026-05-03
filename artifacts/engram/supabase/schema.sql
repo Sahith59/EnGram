@@ -50,6 +50,9 @@ create table if not exists public.context_snapshots (
   content_hash        text,
   identity_hash       text,
   source_url          text,
+  visibility          text not null default 'personal'
+                       check (visibility in ('personal', 'team')),
+  author_handle       text,
   created_at          timestamptz not null default now(),
   updated_at          timestamptz not null default now()
 );
@@ -65,6 +68,13 @@ create index if not exists idx_context_snapshots_team_identity
 create index if not exists idx_context_snapshots_team_source_url
   on public.context_snapshots(team_id, source_url)
   where source_url is not null;
+
+create index if not exists idx_context_snapshots_team_visibility
+  on public.context_snapshots(team_id, visibility, created_at desc);
+
+create index if not exists idx_context_snapshots_creator_personal
+  on public.context_snapshots(created_by, created_at desc)
+  where visibility = 'personal';
 
 -- KT Queries (knowledge transfer natural-language queries)
 create table if not exists public.kt_queries (
@@ -266,10 +276,16 @@ create policy "users can update their own profile"
   using (id = auth.uid())
   with check (id = auth.uid());
 
--- Context Snapshots: team-scoped read/write
-create policy "team members can view snapshots"
+-- Context Snapshots: scope-aware read
+-- Personal rows are visible only to the creator. Team rows are visible to
+-- any member of the same team. Application code is responsible for redacting
+-- raw_conversation when a team member who is NOT the creator reads a team row.
+create policy "scoped snapshot visibility"
   on public.context_snapshots for select
-  using (team_id = public.my_team_id());
+  using (
+    (visibility = 'personal' and created_by = auth.uid())
+    or (visibility = 'team' and team_id = public.my_team_id())
+  );
 
 create policy "team members can insert snapshots"
   on public.context_snapshots for insert
