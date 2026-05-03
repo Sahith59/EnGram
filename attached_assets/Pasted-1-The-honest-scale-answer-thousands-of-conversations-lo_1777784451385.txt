@@ -1,0 +1,90 @@
+1. The honest scale answer: thousands of conversations, low latency
+Current reality of your codebase: Schema is set up well — pgvector extension is enabled, embedding vector(1536) column exists on snapshots, IVFFlat index is built, and there's even a match_context_snapshots SQL function. But — embeddings are never generated on capture. The column is always NULL. So today, retrieval falls back to keyword/tag scans, which gets ugly past ~500 captures.
+What scaling actually looks like — honest engineering numbers:
+Captures	Naive scan	With embeddings + IVFFlat	With hybrid + reranking
+100	50ms	20ms	80ms
+1,000	200ms	25ms	100ms
+10,000	2s ⚠️	40ms	150ms
+100,000	20s ❌	80ms	250ms
+1,000,000	dead	250ms (HNSW)	400ms
+The retrieval architecture I'd build (proven pattern from Notion AI, Mem, Glean):
+User asks "why did we choose Postgres over Mongo?"
+│
+▼
+[Stage 1: Hybrid recall — 30ms, returns top 50]
+├── pgvector cosine similarity on embeddings
+└── Postgres full-text search on title/summary/tags
+│
+▼
+[Stage 2: Cross-encoder rerank — 80ms, returns top 8]
+Claude Haiku scores each candidate vs the query
+│
+▼
+[Stage 3: Answer generation — 1-2s]
+Claude Sonnet 4.5 with the 8 best snippets
+
+End-to-end p95 budget: ~1.5s for 100K snapshots, ~2s for 1M. That's competitive with Glean ($25/user/mo enterprise tool).
+The four moving parts to actually build:
+1. Generate embeddings on capture (one extra API call to Voyage AI or OpenAI text-embedding-3-small — $0.02 per 1M tokens, basically free)
+2. Switch IVFFlat → HNSW index when you cross 50K rows (better recall at scale, Postgres 16+ supports natively)
+3. Add tsvector + GIN index for keyword fallback (handles names, IDs, exact phrases that embeddings miss)
+4. Two-stage retrieval — recall fast/wide, then rerank narrow with an LLM
+My honest recommendation: Embeddings on capture is the single highest-leverage thing to build right now. Without it, every other feature (project clustering, semantic search, smart resume) is built on sand. Total work: ~1-2 hours. Should be Phase 6, before anything else.
+
+2. Project clustering — practicality check
+The vision: Multiple captures that belong to the same project (e.g., "ENGRAM build" across 30 sessions) get auto-grouped. Continue button gives you the project's current state, not one chat.
+How it actually works (proven approach):
+* On every capture, compute its embedding
+* Compare cosine similarity vs all existing project centroids
+* If similarity > 0.78 to an existing project → assign to that project, update centroid
+* Otherwise → create new project with this capture as seed
+* Every N captures, re-cluster to fix drift
+Cost & latency:
+* One extra DB query per capture (~20ms)
+* Project assignment is non-blocking (background job)
+* Storage: trivial (one row per project)
+Hard parts (be honest):
+* Cold start: with <5 captures per project, clusters are noisy. Mitigate with manual "merge" / "split" UI.
+* Multi-project sessions: a single chat that drifts across two projects gets misclassified. Mitigate with "split this snapshot" action.
+* Naming: clusters need human-readable names. Auto-generate via Haiku from the cluster's titles + let user edit.
+Verdict: highly practical, ~3-4 hours of work, transformational UX impact.
+
+3. Citation links — practicality check
+The vision: Every claim in the brief points back to the exact line of the raw transcript. Click a citation → see the source quote.
+How it actually works:
+* During capture, we already keep raw_conversation as ordered pairs
+* Modify the capture prompt to require inline citations: "We chose Postgres [^p:5]" where p:5 = pair index 5
+* In the UI, parse [^p:N] markers, render as clickable footnote
+* Click → modal shows the raw pair quoted
+Cost & latency:
+* Zero extra API calls — same Haiku call, just prompt change
+* Trivial render logic on the frontend
+Hard parts:
+* Models occasionally fabricate citations. Mitigation: validate citations server-side post-extraction. If [^p:99] doesn't exist, strip it and log a quality warning.
+* For very long transcripts (>200 turns), citation indexes need a lookup table to stay readable.
+Verdict: extremely practical, ~2 hours of work, massive trust impact. This is your "no other competitor does this" moat.
+
+4. Two-way sync back — practicality check
+The vision: After you continue work in a new AI tool, that conversation also gets captured and merged back into the project's canonical memory. ENGRAM becomes the single source of truth across all your AI tools.
+How it works:
+* Already 80% built — your extension captures from Claude/ChatGPT/Gemini equally
+* Need: mark a capture as "child of project P" via clustering (item #2)
+* Need: a "merge" view that shows the project timeline as a unified document
+* Optional: detect "this conversation continues from snapshot X" via the verification checkpoint pattern in the brief itself
+Cost & latency:
+* Zero new infra — uses clustering
+* New view, new merge logic on the brief generation
+Hard parts:
+* Merging two briefs intelligently (not just concatenating) — requires another LLM pass. ~$0.001 per merge with Haiku.
+* Resolving contradictions across sessions ("Session 1 said Postgres, Session 5 said Mongo"). Solution: timeline view that surfaces decision evolution rather than collapsing it.
+Verdict: practical but DEPENDS on project clustering being done first.
+
+My recommended build order (each is its own task you can stop after)
+￼
+Total: ~14 hours of focused work to take ENGRAM from "neat demo" to "actual moat."
+
+My ask before we build
+Two questions so I scope correctly:
+1. Order check: Do you want to go straight in this order (6 → 7 → 8 → 9 → 10), or are you tempted to jump straight to project clustering and accept that it'll feel rough until embeddings exist?
+2. Embedding provider: I recommend OpenAI text-embedding-3-small (1536 dims, matches your existing schema, $0.02/M tokens, 2-3s per capture). Alternatives: Voyage (better quality, more expensive), Cohere, or local sentence-transformers (free but slower). Any preference, or trust me to pick OpenAI?
+Once you answer these two, I'll build Phase 6 (embeddings + hybrid retrieval) and we'll watch the latency tests together.

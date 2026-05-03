@@ -1,1 +1,9 @@
-{}
+{
+  "/api/resume/route": "app/api/resume/route.js",
+  "/api/contexts/[id]/export/route": "app/api/contexts/[id]/export/route.js",
+  "/api/ask/route": "app/api/ask/route.js",
+  "/api/contexts/route": "app/api/contexts/route.js",
+  "/(app)/ask/page": "app/(app)/ask/page.js",
+  "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
+  "/(app)/team/page": "app/(app)/team/page.js"
+}
