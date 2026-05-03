@@ -3,8 +3,9 @@
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { Check, ClipboardCopy, ChevronDown, ExternalLink, Sparkles } from "lucide-react";
+import { Check, ClipboardCopy, ChevronDown, ExternalLink, Sparkles, Square, CheckSquare } from "lucide-react";
 import { ToolBadge } from "./ToolBadge";
+import { VisibilityToggle } from "./VisibilityToggle";
 import { cn, formatRelativeTime, truncate } from "@/lib/utils";
 import { copyToClipboard } from "@/lib/clipboard";
 import type { AITool } from "@/types";
@@ -20,6 +21,7 @@ export interface ContextCardData {
   created_at: string;
   visibility?: "personal" | "team" | string | null;
   author_handle?: string | null;
+  created_by?: string | null;
 }
 
 const continueTargets = [
@@ -31,10 +33,22 @@ const continueTargets = [
 export function ContextCard({
   ctx,
   index = 0,
+  currentUserId,
+  selectMode = false,
+  selected = false,
+  onToggleSelect,
+  onVisibilityChange,
 }: {
   ctx: ContextCardData;
   index?: number;
+  currentUserId?: string | null;
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
+  onVisibilityChange?: (id: string, next: "personal" | "team") => void;
 }) {
+  const isCreator = !!currentUserId && ctx.created_by === currentUserId;
+  const visibility: "personal" | "team" = ctx.visibility === "team" ? "team" : "personal";
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
   const [continueState, setContinueState] = useState<"idle" | "preparing" | "ready">("idle");
@@ -145,33 +159,43 @@ export function ContextCard({
       whileHover={{ y: -2 }}
       style={{ position: "relative", zIndex: open ? 50 : "auto" }}
     >
-      <Link href={`/context/${ctx.id}`}>
+      <CardWrapper
+        contextId={ctx.id}
+        selectMode={selectMode}
+        onToggleSelect={onToggleSelect}
+      >
         <div
           className={cn(
-            "group relative rounded-lg border border-gh-border bg-gh-canvas p-5 transition-all duration-200",
-            "hover:border-engram/60 hover:shadow-[0_0_0_1px_rgba(124,58,237,0.15),0_8px_32px_-8px_rgba(124,58,237,0.25)]"
+            "group relative rounded-lg border bg-gh-canvas p-5 transition-all duration-200",
+            selected
+              ? "border-engram shadow-[0_0_0_1px_rgba(124,58,237,0.4)]"
+              : "border-gh-border hover:border-engram/60 hover:shadow-[0_0_0_1px_rgba(124,58,237,0.15),0_8px_32px_-8px_rgba(124,58,237,0.25)]"
           )}
         >
+          {selectMode && (
+            <div className="absolute top-3 left-3">
+              {selected ? (
+                <CheckSquare className="h-4 w-4 text-engram-light" />
+              ) : (
+                <Square className="h-4 w-4 text-gh-muted" />
+              )}
+            </div>
+          )}
           <div
             className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-engram/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"
             aria-hidden
           />
 
-          <div className="flex items-start justify-between gap-4 mb-3">
+          <div className={cn("flex items-start justify-between gap-4 mb-3", selectMode && "pl-6")}>
             <div className="flex items-center gap-2 min-w-0">
               <ToolBadge tool={ctx.ai_tool} />
-              {ctx.visibility === "team" && (
-                <span
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono text-[10px] bg-engram/10 text-engram-light border border-engram/30"
-                  title={
-                    ctx.author_handle
-                      ? `Shared with team by ${ctx.author_handle}`
-                      : "Shared with team"
-                  }
-                >
-                  team{ctx.author_handle ? ` · ${ctx.author_handle}` : ""}
-                </span>
-              )}
+              <VisibilityToggle
+                contextId={ctx.id}
+                visibility={visibility}
+                authorHandle={ctx.author_handle}
+                editable={isCreator && !selectMode}
+                onChanged={(next) => onVisibilityChange?.(ctx.id, next)}
+              />
               {ctx.project && (
                 <span className="font-mono text-[11px] text-gh-muted truncate">
                   ↳ {ctx.project}
@@ -310,9 +334,38 @@ export function ContextCard({
             </div>
           </div>
         </div>
-      </Link>
+      </CardWrapper>
     </motion.div>
   );
+}
+
+function CardWrapper({
+  contextId,
+  selectMode,
+  onToggleSelect,
+  children,
+}: {
+  contextId: string;
+  selectMode: boolean;
+  onToggleSelect?: (id: string) => void;
+  children: React.ReactNode;
+}) {
+  if (selectMode) {
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onToggleSelect?.(contextId);
+        }}
+        className="w-full text-left"
+      >
+        {children}
+      </button>
+    );
+  }
+  return <Link href={`/context/${contextId}`}>{children}</Link>;
 }
 
 export function ContextCardSkeleton() {
