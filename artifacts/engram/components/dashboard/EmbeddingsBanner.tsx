@@ -1,10 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  Sparkles,
   Loader2,
-  CheckCircle2,
   AlertCircle,
   KeyRound,
 } from "lucide-react";
@@ -19,48 +17,39 @@ type Status = {
 };
 
 /**
- * Surfaces the embedding/backfill state for the dashboard. Shown when:
- *  - Embeddings exist but some captures still need backfill, OR
- *  - The OpenAI key is unhealthy (missing / quota / auth / error), so
- *    the user knows why semantic search isn't working.
+ * Surfaces embedding/backfill state on the dashboard.
  *
- * The previous version silently hid itself when the key was unhealthy,
- * which made it look like Phase 6 was broken with no signal.
+ * Behavior:
+ *  - On mount, fetches status. If captures are missing embeddings AND
+ *    OpenAI is healthy, it AUTOMATICALLY runs the backfill in the
+ *    background — no user action required.
+ *  - Shows a subtle "Indexing…" pill while the backfill runs.
+ *  - Hides itself entirely when everything is healthy and indexed.
+ *  - Shows clear actionable errors when OpenAI is unhealthy (so the
+ *    user knows why semantic search isn't working).
  */
 export function EmbeddingsBanner() {
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
+  const triggeredRef = useRef(false);
 
-  async function refresh() {
+  async function fetchStatus(): Promise<Status | null> {
     try {
       const r = await fetch("/api/admin/backfill-embeddings");
-      if (!r.ok) {
-        const t = await r.text().catch(() => "");
-        console.warn(
-          "[EmbeddingsBanner] status fetch failed",
-          r.status,
-          t.slice(0, 200)
-        );
-        return;
-      }
-      const data = await r.json();
-      setStatus(data);
-    } catch (e) {
-      console.warn("[EmbeddingsBanner] status fetch error", e);
+      if (!r.ok) return null;
+      return (await r.json()) as Status;
+    } catch {
+      return null;
     }
   }
 
-  useEffect(() => {
-    refresh();
-  }, []);
-
-  async function backfill() {
+  async function runBackfill() {
     setBusy(true);
     setError(null);
     try {
-      for (let i = 0; i < 8; i++) {
+      // Loop in batches until nothing left or an error trips us up.
+      for (let i = 0; i < 20; i++) {
         const r = await fetch("/api/admin/backfill-embeddings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -72,20 +61,18 @@ export function EmbeddingsBanner() {
           break;
         }
         if (data.failed > 0) {
-          const firstErr = data.failures?.[0]?.error;
+          const firstErr = data.failures?.[0]?.error ?? "";
           setError(
-            firstErr?.includes("insufficient_quota")
+            firstErr.includes("insufficient_quota")
               ? "OpenAI quota exhausted — add billing at platform.openai.com to continue."
-              : firstErr ?? "Some snapshots failed to embed."
+              : firstErr || "Some snapshots failed to embed."
           );
           break;
         }
-        if (data.remaining === 0) {
-          setDone(true);
-          break;
-        }
+        if (data.remaining === 0) break;
       }
-      await refresh();
+      const fresh = await fetchStatus();
+      if (fresh) setStatus(fresh);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -93,12 +80,33 @@ export function EmbeddingsBanner() {
     }
   }
 
+  // Initial load + auto-trigger backfill if there's work to do and the
+  // key is healthy. The triggeredRef guard prevents double-firing under
+  // React strict mode.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const s = await fetchStatus();
+      if (cancelled) return;
+      setStatus(s);
+      if (
+        s &&
+        s.openAIStatus === "ok" &&
+        s.missing > 0 &&
+        !triggeredRef.current
+      ) {
+        triggeredRef.current = true;
+        await runBackfill();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   if (!status) return null;
 
-  // ---- ERROR STATES ----
-  // Show a clear message when the OpenAI key is unhealthy. Without this
-  // the banner would silently hide and the user would have no idea why
-  // smart search isn't working.
+  // ---- ERROR STATES (always show — these block semantic search) ----
   if (status.openAIStatus === "missing") {
     return (
       <ErrorCard
@@ -129,67 +137,39 @@ export function EmbeddingsBanner() {
       />
     );
   }
-  if (status.openAIStatus === "error") {
+  if (status.openAIStatus === "error" && error) {
     return (
       <ErrorCard
         icon={<AlertCircle className="h-4 w-4" />}
         title="OpenAI request failed"
-        body={status.openAIDetail ?? "Try again in a moment."}
+        body={status.openAIDetail ?? error}
       />
     );
   }
 
-  // ---- HEALTHY KEY: show backfill prompt or success ----
-  if (done && status.missing === 0) {
+  // ---- HEALTHY KEY: subtle floating indexing pill, or hide entirely ----
+  // Fixed-position so it can mount globally in the layout without
+  // disrupting any page's content flow.
+  if (busy) {
     return (
-      <div className="mb-5 flex items-center gap-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3.5 py-2.5 text-sm text-emerald-200">
-        <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
-        <span>
-          Smart search is ready. {status.embedded} of {status.total} captures
-          indexed.
-        </span>
+      <div className="fixed bottom-4 right-4 z-40 inline-flex items-center gap-2 rounded-full border border-engram/30 bg-gh-canvas/95 backdrop-blur px-3 py-1.5 text-xs text-engram-light shadow-lg">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Indexing for smart search…
       </div>
     );
   }
 
-  if (status.missing === 0) return null;
-
-  return (
-    <div className="mb-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-lg border border-engram/30 bg-engram/5 px-3.5 py-2.5">
-      <div className="flex items-start gap-2.5 text-sm text-gh-text">
-        <Sparkles className="h-4 w-4 mt-0.5 flex-shrink-0 text-engram-light" />
-        <div>
-          <p className="font-medium">Smart search needs an index pass</p>
-          <p className="text-xs text-gh-muted mt-0.5">
-            {status.missing} of {status.total} captures haven&apos;t been
-            embedded yet. New captures get indexed automatically — this is a
-            one-time backfill for your existing chats.
-          </p>
-        </div>
+  if (error) {
+    return (
+      <div className="fixed bottom-4 right-4 z-40 max-w-sm inline-flex items-start gap-2 rounded-md border border-rose-500/30 bg-gh-canvas/95 backdrop-blur px-3 py-2 text-xs text-rose-200 shadow-lg">
+        <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+        <span>{error}</span>
       </div>
-      <button
-        type="button"
-        onClick={backfill}
-        disabled={busy}
-        className="inline-flex items-center gap-2 self-end sm:self-auto px-3 py-1.5 rounded-md bg-engram hover:bg-engram-light disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-medium transition-colors"
-      >
-        {busy ? (
-          <>
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            Indexing…
-          </>
-        ) : (
-          <>Re-index now</>
-        )}
-      </button>
-      {error && (
-        <div className="flex items-start gap-2 text-xs text-rose-300 sm:basis-full">
-          <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
-    </div>
-  );
+    );
+  }
+
+  // Everything healthy and indexed — get out of the user's way.
+  return null;
 }
 
 function ErrorCard({

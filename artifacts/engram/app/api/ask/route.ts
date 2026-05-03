@@ -133,11 +133,14 @@ export async function POST(request: NextRequest) {
     // bypass RLS for the RPC (we trust the team_id_filter we just looked
     // up from the auth'd user's profile).
     const admin = createAdminClient();
+    // text-embedding-3-small produces compressed cosine ranges. "Related"
+    // pairs typically score 0.15-0.35; "very similar" 0.35-0.55. The
+    // threshold here just controls recall — final ranking happens below.
     const { data, error } = await admin.rpc("search_snapshots", {
       query_embedding: queryEmbedding,
       team_id_filter: profile!.team_id,
       match_count: 20,
-      match_threshold: 0.25,
+      match_threshold: 0.12,
     });
     if (error) {
       console.warn("[ask] semantic recall failed:", error.message);
@@ -301,7 +304,11 @@ export async function POST(request: NextRequest) {
   // - High cosine similarity is independent strong evidence.
   // - A row needs to clear EITHER bar to qualify.
   const minKeywordScore = tokens.length >= 2 ? 2 : 1;
-  const SEMANTIC_QUALIFY = 0.45; // strong semantic match alone is enough
+  // Calibrated for text-embedding-3-small. Cosine sim of 0.22+ is a
+  // genuinely related conversation (e.g. "recursion" vs "functions
+  // calling themselves" scores ~0.26). Raising this threshold mostly
+  // hurts recall without improving precision noticeably.
+  const SEMANTIC_QUALIFY = 0.2;
   const scored = results
     .map((r) => {
       const ks = keywordScore(r);
@@ -321,9 +328,9 @@ export async function POST(request: NextRequest) {
     })
     .map((x) => ({
       ...x,
-      // Combined score: weight semantic similarity heavily, treat each
-      // keyword hit as worth ~0.15 cosine. Cap to keep things sane.
-      total: Math.min(1, x.sim + Math.min(0.45, x.ks * 0.15)),
+      // Combined score: scale up semantic sim (since 3-small's range is
+      // compressed) and treat each keyword hit as worth ~0.15. Cap to 1.
+      total: Math.min(1, x.sim * 1.6 + Math.min(0.45, x.ks * 0.15)),
     }))
     .sort(
       (a, b) =>

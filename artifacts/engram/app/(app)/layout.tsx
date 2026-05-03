@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
 import { ResumeBanner } from "@/components/resume/ResumeBanner";
+import { EmbeddingsBanner } from "@/components/dashboard/EmbeddingsBanner";
 
 export default async function AppLayout({
   children,
@@ -94,6 +95,9 @@ export default async function AppLayout({
         <main className="flex-1">{children}</main>
       </div>
       <ResumeBanner />
+      {/* Auto-fires backfill on every authenticated page load.
+          Self-hides when nothing to do or when OpenAI is healthy. */}
+      <EmbeddingsBanner />
     </div>
   );
 }
