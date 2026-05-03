@@ -11,11 +11,21 @@ import {
 import { Sparkles, User, Users, Globe } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+interface GithubSource {
+  ref: string;
+  id: string;
+  repo_full_name: string;
+  file_path: string;
+  language: string;
+  similarity: number;
+}
+
 interface QueryRecord {
   question: string;
   answer: string;
   sources: AnswerSource[];
   related: RelatedSource[];
+  github_sources?: GithubSource[];
   confidence?: number | null;
   scope?: "personal" | "team" | "all";
   ts: number;
@@ -48,6 +58,7 @@ export default function AskPage() {
             answer: data.answer,
             sources: data.sources ?? [],
             related: data.related ?? [],
+            github_sources: data.github_sources ?? [],
             confidence: data.confidence,
             scope: data.scope ?? scope,
             ts: Date.now(),

@@ -10,15 +10,21 @@ import {
   Users,
   Settings,
   GitBranch,
+  FolderGit2,
+  Github,
+  Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TeamSwitcher } from "./TeamSwitcher";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/projects", label: "Projects", icon: FolderGit2 },
   { href: "/ask", label: "Ask ENGRAM", icon: MessageSquareText },
   { href: "/digest", label: "Digest", icon: FileText },
   { href: "/team", label: "Team", icon: Users },
+  { href: "/settings/github", label: "GitHub", icon: Github },
+  { href: "/setup", label: "DB Setup", icon: Database },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

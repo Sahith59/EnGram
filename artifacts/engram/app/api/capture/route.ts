@@ -7,6 +7,7 @@ import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { ensureUserTeam } from "@/lib/team";
 import { hashConversation, hashConversationIdentity } from "@/lib/hash";
 import { buildSnapshotEmbeddingInput, embedText } from "@/lib/embeddings";
+import { assignSnapshotToProject } from "@/lib/clustering";
 
 export function OPTIONS(request: NextRequest) {
   return corsOptions(request);
@@ -561,6 +562,23 @@ Call the save_handoff_brief tool with the structured result.`,
     return withCors(
       NextResponse.json({ error: "Failed to save snapshot" }, { status: 500 }),
       request
+    );
+  }
+
+  // ── Non-blocking project clustering ──────────────────────────────────────
+  // Fire-and-forget: if it fails or the migration isn't applied yet, the
+  // snapshot is still saved — clustering just gets skipped silently.
+  if (embeddingVec && resolvedTeamId && snapshot) {
+    Promise.resolve().then(() =>
+      assignSnapshotToProject({
+        snapshotId: snapshot.id,
+        teamId: resolvedTeamId!,
+        embedding: embeddingVec!,
+        title: extraction.title,
+        summary: extraction.summary,
+      }).catch((e) =>
+        console.warn("[capture] clustering fire-and-forget error:", e)
+      )
     );
   }
 

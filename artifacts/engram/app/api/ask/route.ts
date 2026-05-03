@@ -5,6 +5,16 @@ import { anthropic } from "@/lib/anthropic";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { embedText } from "@/lib/embeddings";
 
+type GithubChunkHit = {
+  id: string;
+  repo_id: string;
+  file_path: string;
+  language: string;
+  content: string;
+  similarity: number;
+  repo_full_name?: string;
+};
+
 /**
  * POST /api/ask
  * body: { question: string, scope?: 'personal' | 'team' | 'all' }
@@ -151,7 +161,43 @@ export async function POST(request: NextRequest) {
       similarity: r.similarity,
     }));
   }
-  const semanticHits = await semanticRecall();
+  // ----- GitHub chunk search (parallel with semantic recall) -----
+  async function githubChunkSearch(): Promise<GithubChunkHit[]> {
+    if (!queryEmbedding) return [];
+    const admin = createAdminClient();
+    try {
+      const { data, error } = await admin.rpc("search_github_chunks", {
+        query_embedding: queryEmbedding,
+        team_id_filter: profile!.team_id,
+        repo_id_filter: null,
+        match_count: 5,
+        match_threshold: 0.5,
+      });
+      if (error) {
+        // Table may not exist yet (migration not applied)
+        if (!error.message.includes("does not exist")) {
+          console.warn("[ask] github chunk search failed:", error.message);
+        }
+        return [];
+      }
+      if (!data || data.length === 0) return [];
+      // Enrich with repo name
+      const repoIds = [...new Set((data as GithubChunkHit[]).map((r) => r.repo_id))];
+      const { data: repos } = await admin
+        .from("github_repos")
+        .select("id, repo_full_name")
+        .in("id", repoIds);
+      const repoNameMap = new Map((repos ?? []).map((r: { id: string; repo_full_name: string }) => [r.id, r.repo_full_name]));
+      return (data as GithubChunkHit[]).map((r) => ({
+        ...r,
+        repo_full_name: repoNameMap.get(r.repo_id) ?? r.repo_id,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  const [semanticHits, githubHits] = await Promise.all([semanticRecall(), githubChunkSearch()]);
   const semanticIds = new Set(semanticHits.map((h) => h.id));
   const similarityById = new Map(semanticHits.map((h) => [h.id, h.similarity]));
 
@@ -320,7 +366,8 @@ export async function POST(request: NextRequest) {
   const scored = scoredAll.slice(0, 4);
   const sources = scored.map((s) => s.row);
 
-  if (sources.length === 0) {
+  // Early return only if BOTH snapshot sources AND github hits are empty
+  if (sources.length === 0 && githubHits.length === 0) {
     const hint =
       scope === "team"
         ? "No matching team snapshots found. Try Personal scope, or capture some chats in Team mode first."
@@ -331,11 +378,13 @@ export async function POST(request: NextRequest) {
       answer: hint,
       sources: [],
       related: [],
+      github_sources: [],
       queryId: null,
       scope,
     });
   }
 
+  // Build snapshot context block
   const contextBlock = sources
     .map((s, i) => {
       const author =
@@ -351,26 +400,41 @@ Rationale: ${s.rationale ? s.rationale.slice(0, 400) : "N/A"}`;
     })
     .join("\n\n---\n\n");
 
+  // Build GitHub chunk context block (separate section, labelled GH1, GH2...)
+  const githubBlock =
+    githubHits.length > 0
+      ? "\n\n## GitHub Repository Code\n\n" +
+        githubHits
+          .slice(0, 3)
+          .map(
+            (g, i) =>
+              `[GH${i + 1}] **${g.repo_full_name ?? "repo"}** — \`${g.file_path}\`\n\`\`\`${g.language ?? ""}\n${g.content.slice(0, 800)}\n\`\`\``
+          )
+          .join("\n\n---\n\n")
+      : "";
+
   let answer: string;
   let confidence: number | null = null;
 
   try {
+    const hasSnapshots = sources.length > 0;
+    const hasGithub = githubHits.length > 0;
+
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-5",
       max_tokens: 1024,
       messages: [
         {
           role: "user",
-          content: `You are a precise knowledge assistant. Answer the user's question using ONLY the captured contexts that are actually relevant to the question.
+          content: `You are a precise knowledge assistant for a developer team. Answer the user's question using the captured contexts and/or GitHub code below that are actually relevant.
 
 Question: ${question}
-
-Candidate contexts (some may be irrelevant — IGNORE any that don't substantively answer the question):
-${contextBlock}
+${hasSnapshots ? `\n## Captured AI Conversations\n\n${contextBlock}` : ""}${githubBlock}
 
 Strict rules:
 - Use a context ONLY if its content directly addresses the question. If it merely mentions a related word but is about a different topic, DO NOT cite it.
-- Cite the contexts you actually use with [1], [2], etc. matching the numbering above.
+- For captured conversations, cite with [1], [2], etc.
+- For GitHub code, cite with [GH1], [GH2], etc.
 - DO NOT cite a context just to pad the answer. Better to cite one source well than four loosely.
 - If NONE of the contexts answer the question, respond exactly with: "I don't have a captured conversation that answers this. Try rephrasing, or capture a chat on this topic."
 - Be concise (2-4 paragraphs max). No filler.
@@ -488,6 +552,14 @@ Strict rules:
       author_handle: r.row.author_handle ?? null,
       similarity: Math.round(r.sim * 100) / 100,
       keywordHits: r.ks,
+    })),
+    github_sources: githubHits.map((g, i) => ({
+      ref: `GH${i + 1}`,
+      id: g.id,
+      repo_full_name: g.repo_full_name ?? "",
+      file_path: g.file_path,
+      language: g.language,
+      similarity: Math.round(g.similarity * 100) / 100,
     })),
     queryId: savedQuery?.id ?? null,
   });
