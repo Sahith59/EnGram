@@ -1,1 +1,3 @@
-{}
+{
+  "/api/digest/route": "app/api/digest/route.js"
+}

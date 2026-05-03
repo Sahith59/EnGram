@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import {
   LayoutDashboard,
   MessageSquareText,
+  FileText,
   Users,
   Settings,
   GitBranch,
@@ -15,6 +16,7 @@ import { cn } from "@/lib/utils";
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/ask", label: "Ask ENGRAM", icon: MessageSquareText },
+  { href: "/digest", label: "Digest", icon: FileText },
   { href: "/team", label: "Team", icon: Users },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
