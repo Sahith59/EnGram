@@ -31,12 +31,18 @@ export async function ensureUserTeam(user: {
   if (existing?.team_id) return existing.team_id;
 
   // Create a personal workspace
-  const handle = user.email ? user.email.split("@")[0] : "Personal";
+  const handle = (user.email ? user.email.split("@")[0] : "personal")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24) || "personal";
   const teamName = `${handle}'s workspace`;
+  // Append short unique suffix to avoid slug collisions
+  const slug = `${handle}-${user.id.slice(0, 8)}`;
 
   const { data: newTeam, error: teamErr } = await admin
     .from("teams")
-    .insert({ name: teamName })
+    .insert({ name: teamName, slug })
     .select("id")
     .single();
 
