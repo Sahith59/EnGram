@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   User as UserIcon,
@@ -10,12 +10,22 @@ import {
   Check,
   ClipboardCopy,
   RefreshCw,
+  Github,
+  GitBranch,
+  Link2,
+  Link2Off,
+  AlertCircle,
+  CheckCircle2,
+  Loader2,
+  ExternalLink,
+  Zap,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
 const tabs = [
   { id: "profile", label: "Profile", icon: UserIcon },
+  { id: "integrations", label: "Integrations", icon: Zap },
   { id: "api", label: "API Key", icon: Key },
   { id: "team", label: "Team", icon: UsersIcon },
   { id: "privacy", label: "Privacy", icon: Shield },
@@ -77,6 +87,7 @@ export default function SettingsPage() {
             transition={{ duration: 0.15 }}
           >
             {tab === "profile" && <ProfileTab />}
+            {tab === "integrations" && <IntegrationsTab />}
             {tab === "api" && <ApiTab />}
             {tab === "team" && <TeamTab />}
             {tab === "privacy" && <PrivacyTab />}
@@ -227,6 +238,245 @@ function ApiTab() {
         Install the Chrome extension →
       </a>
     </Card>
+  );
+}
+
+/* ── Integrations Tab ────────────────────────────────────────────────────── */
+
+interface OAuthStatus {
+  connected: boolean;
+  login?: string | null;
+  via?: "oauth" | "pat";
+}
+
+interface IntegrationStatus {
+  github: OAuthStatus;
+  gitlab: OAuthStatus;
+  has_github_app: boolean;
+  has_gitlab_app: boolean;
+}
+
+function IntegrationCard({
+  title,
+  icon,
+  description,
+  status,
+  connectHref,
+  onDisconnect,
+  hasApp,
+  webhookUrl,
+  webhookNote,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  description: string;
+  status: OAuthStatus;
+  connectHref: string;
+  onDisconnect: () => void;
+  hasApp: boolean;
+  webhookUrl: string;
+  webhookNote: string;
+}) {
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  async function handleDisconnect() {
+    setDisconnecting(true);
+    try { await onDisconnect(); } finally { setDisconnecting(false); }
+  }
+
+  async function copyWebhook() {
+    await navigator.clipboard.writeText(webhookUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <div className="rounded-xl border border-gh-border bg-gh-canvas overflow-hidden">
+      <div className="px-5 py-4 border-b border-gh-border flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          {icon}
+          <div>
+            <h3 className="text-base font-semibold text-gh-text">{title}</h3>
+            <p className="text-xs text-gh-muted mt-0.5">{description}</p>
+          </div>
+        </div>
+        {status.connected ? (
+          <span className="flex items-center gap-1.5 text-xs text-green-400">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            {status.via === "pat" ? "Connected via PAT" : "Connected"}
+            {status.login && <span className="text-gh-muted">· @{status.login}</span>}
+          </span>
+        ) : (
+          <span className="flex items-center gap-1.5 text-xs text-gh-muted">
+            <AlertCircle className="h-3.5 w-3.5" />Not connected
+          </span>
+        )}
+      </div>
+      <div className="p-5 space-y-4">
+        {status.connected ? (
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleDisconnect}
+              disabled={disconnecting}
+              className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded border border-red-400/30 text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-50">
+              {disconnecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link2Off className="h-3.5 w-3.5" />}
+              Disconnect
+            </button>
+            {status.via === "pat" && (
+              <span className="text-xs text-gh-muted">
+                Using legacy Personal Access Token.{" "}
+                {hasApp && (
+                  <a href={connectHref} className="text-engram-light hover:underline">
+                    Upgrade to OAuth →
+                  </a>
+                )}
+              </span>
+            )}
+          </div>
+        ) : (
+          <div>
+            {hasApp ? (
+              <a href={connectHref}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-gh-canvas border border-gh-border hover:border-engram/40 text-sm text-gh-text hover:text-gh-text transition-colors">
+                <Link2 className="h-4 w-4 text-engram-light" />
+                Connect {title}
+              </a>
+            ) : (
+              <div className="rounded-lg border border-yellow-400/20 bg-yellow-400/5 p-3 text-xs text-yellow-400 space-y-1">
+                <p className="font-medium">OAuth app not configured</p>
+                <p className="text-gh-muted">
+                  Create a {title} OAuth App and set the required environment variables to enable OAuth login.
+                  Until then, you can still connect using a Personal Access Token from the GitHub tab above.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Webhook setup section */}
+        <div className="border-t border-gh-border/50 pt-4">
+          <p className="text-xs font-mono uppercase tracking-wider text-gh-muted mb-2">
+            Push Webhook (for AST indexing)
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-[11px] font-mono bg-gh-bg border border-gh-border rounded px-2 py-1.5 text-gh-muted truncate">
+              {webhookUrl}
+            </code>
+            <button onClick={copyWebhook}
+              className="shrink-0 h-8 px-2 rounded border border-gh-border hover:border-gh-muted bg-gh-bg transition-colors">
+              {copied ? <Check className="h-3.5 w-3.5 text-green-400" /> : <ClipboardCopy className="h-3.5 w-3.5 text-gh-muted" />}
+            </button>
+          </div>
+          <p className="text-[11px] text-gh-muted mt-1.5 leading-relaxed">{webhookNote}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IntegrationsTab() {
+  const [status, setStatus] = useState<IntegrationStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const appUrl = typeof window !== "undefined" ? window.location.origin : "";
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/oauth/status");
+      if (r.ok) setStatus(await r.json());
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function disconnect(provider: "github" | "gitlab") {
+    await fetch(`/api/oauth/status?provider=${provider}`, { method: "DELETE" });
+    await load();
+  }
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        {[0, 1].map((i) => (
+          <div key={i} className="h-40 rounded-xl border border-gh-border bg-gh-canvas animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+
+  if (!status) {
+    return <p className="text-sm text-gh-muted">Failed to load integration status.</p>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="mb-2">
+        <p className="text-sm text-gh-muted leading-relaxed">
+          Connect GitHub and GitLab to enable AST-level code indexing, push webhooks, and the Blast Radius Engine.
+          Each push to a connected repo automatically re-indexes changed files within 60 seconds.
+        </p>
+      </div>
+
+      <IntegrationCard
+        title="GitHub"
+        icon={<Github className="h-6 w-6 text-gh-text" />}
+        description="Index repos, receive push webhooks, parse AST dependency graphs"
+        status={status.github}
+        connectHref="/api/oauth/github"
+        onDisconnect={() => disconnect("github")}
+        hasApp={status.has_github_app}
+        webhookUrl={`${appUrl}/api/webhooks/github`}
+        webhookNote="Add this URL to your GitHub repo → Settings → Webhooks. Content type: application/json. Events: Push."
+      />
+
+      <IntegrationCard
+        title="GitLab"
+        icon={<GitBranch className="h-6 w-6 text-gh-text" />}
+        description="Index GitLab repos, receive push webhooks, parse AST dependency graphs"
+        status={status.gitlab}
+        connectHref="/api/oauth/gitlab"
+        onDisconnect={() => disconnect("gitlab")}
+        hasApp={status.has_gitlab_app}
+        webhookUrl={`${appUrl}/api/webhooks/gitlab`}
+        webhookNote="Add this URL to your GitLab project → Settings → Webhooks. Trigger: Push events."
+      />
+
+      <div className="rounded-xl border border-gh-border bg-gh-canvas p-5">
+        <h3 className="text-sm font-semibold text-gh-text mb-1 flex items-center gap-2">
+          <ExternalLink className="h-4 w-4 text-engram-light" />
+          Setting up OAuth Apps
+        </h3>
+        <div className="space-y-2 text-xs text-gh-muted leading-relaxed">
+          <p>
+            <strong className="text-gh-text">GitHub:</strong> Go to{" "}
+            <a href="https://github.com/settings/developers" target="_blank" rel="noopener"
+              className="text-engram-light hover:underline">GitHub Developer Settings</a>{" "}
+            → OAuth Apps → New. Set callback URL to{" "}
+            <code className="bg-gh-bg border border-gh-border rounded px-1">{appUrl}/api/oauth/github/callback</code>.
+            Then set <code className="bg-gh-bg border border-gh-border rounded px-1">GITHUB_CLIENT_ID</code> and{" "}
+            <code className="bg-gh-bg border border-gh-border rounded px-1">GITHUB_CLIENT_SECRET</code> in your environment.
+          </p>
+          <p>
+            <strong className="text-gh-text">GitLab:</strong> Go to{" "}
+            <a href="https://gitlab.com/-/profile/applications" target="_blank" rel="noopener"
+              className="text-engram-light hover:underline">GitLab Applications</a>{" "}
+            → Add new application. Callback URL:{" "}
+            <code className="bg-gh-bg border border-gh-border rounded px-1">{appUrl}/api/oauth/gitlab/callback</code>.
+            Set <code className="bg-gh-bg border border-gh-border rounded px-1">GITLAB_CLIENT_ID</code> and{" "}
+            <code className="bg-gh-bg border border-gh-border rounded px-1">GITLAB_CLIENT_SECRET</code>.
+          </p>
+          <p>
+            <strong className="text-gh-text">Webhook security:</strong> Optionally set{" "}
+            <code className="bg-gh-bg border border-gh-border rounded px-1">GITHUB_WEBHOOK_SECRET</code> and{" "}
+            <code className="bg-gh-bg border border-gh-border rounded px-1">GITLAB_WEBHOOK_TOKEN</code> to verify webhook signatures.
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 

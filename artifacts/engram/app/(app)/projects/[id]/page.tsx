@@ -18,6 +18,7 @@ type Repo = {
   id: string; repo_full_name: string; repo_name: string; owner_login: string;
   file_count: number; chunk_count: number; is_private: boolean;
   indexed_at: string | null; default_branch: string | null;
+  last_indexed_commit: string | null;
 };
 type MemberProfile = { id: string; full_name: string | null; display_name: string | null; avatar_url: string | null; email: string | null };
 type Member = { id: string; user_id: string; role: string; joined_at: string; profile: MemberProfile | null; is_self: boolean };
@@ -220,7 +221,13 @@ export default function ProjectWorkspacePage() {
                     <>
                       <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />{repo.default_branch ?? "main"}</span>
                       <span className="flex items-center gap-1"><BookOpen className="h-3 w-3" />{repo.file_count.toLocaleString()} files</span>
-                      <span className="flex items-center gap-1"><GitCommit className="h-3 w-3 text-engram-light/70" />commits indexed</span>
+                      {repo.last_indexed_commit ? (
+                        <span className="flex items-center gap-1 text-green-400/80" title={`AST indexed at commit ${repo.last_indexed_commit}`}>
+                          <GitCommit className="h-3 w-3" />AST @ {repo.last_indexed_commit.slice(0, 7)}
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1"><GitCommit className="h-3 w-3 text-engram-light/70" />commits indexed</span>
+                      )}
                     </>
                   )}
                   <span className="flex items-center gap-1"><Users className="h-3 w-3" />{project.member_count} member{project.member_count !== 1 ? "s" : ""}</span>
