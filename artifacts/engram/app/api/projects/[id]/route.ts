@@ -43,7 +43,7 @@ export async function GET(
       .order("created_at", { ascending: true }),
     project.github_repo_id
       ? admin.from("github_repos")
-          .select("id, repo_full_name, repo_name, owner_login, file_count, chunk_count, indexed_at, default_branch, is_private, last_indexed_commit, provider")
+          .select("id, repo_full_name, repo_name, owner_login, file_count, chunk_count, indexed_at, default_branch, is_private, last_indexed_commit, oauth_provider")
           .eq("id", project.github_repo_id).single()
       : Promise.resolve({ data: null }),
     admin.from("project_members")

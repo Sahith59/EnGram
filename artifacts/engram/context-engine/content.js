@@ -130,13 +130,25 @@
         if (content) pairs.push({ role, content });
       });
     } else if (TOOL === "claude") {
-      document.querySelectorAll("[data-testid^='message']").forEach((el) => {
-        const isUser = el.getAttribute("data-testid")?.includes("user");
-        pairs.push({
-          role: isUser ? "user" : "assistant",
-          content: el.innerText?.trim() ?? "",
+      // Strategy 1 (2025): data-testid="human-turn" / "ai-turn"
+      const modernEls = document.querySelectorAll("[data-testid='human-turn'], [data-testid='ai-turn']");
+      if (modernEls.length > 0) {
+        modernEls.forEach((el) => {
+          const isUser = el.getAttribute("data-testid") === "human-turn";
+          const content = stripUiNoise(el.innerText?.trim() ?? "");
+          if (content) pairs.push({ role: isUser ? "user" : "assistant", content });
         });
-      });
+      }
+      // Strategy 2: older data-testid^="message" pattern
+      if (pairs.length === 0) {
+        document.querySelectorAll("[data-testid^='message']").forEach((el) => {
+          const tid = el.getAttribute("data-testid") ?? "";
+          const isUser = tid.includes("human") || tid.includes("user");
+          const content = stripUiNoise(el.innerText?.trim() ?? "");
+          if (content) pairs.push({ role: isUser ? "user" : "assistant", content });
+        });
+      }
+      // Strategy 3: class-based fallback
       if (pairs.length === 0) {
         document
           .querySelectorAll("article, .font-claude-message, .font-user-message")
@@ -462,12 +474,22 @@
     }
 
     if (TOOL === "claude") {
-      // Strategy 1: data-testid containing "human" or "assistant"
-      document.querySelectorAll("[data-testid^='message']").forEach((el) => {
-        const tid = el.getAttribute("data-testid") || "";
-        result.push({ el, role: tid.includes("human") ? "user" : "assistant" });
-      });
-      // Strategy 2: class-based selectors
+      // Strategy 1 (2025): data-testid="human-turn" / "ai-turn"
+      const modernEls = document.querySelectorAll("[data-testid='human-turn'], [data-testid='ai-turn']");
+      if (modernEls.length > 0) {
+        modernEls.forEach((el) => {
+          const isUser = el.getAttribute("data-testid") === "human-turn";
+          result.push({ el, role: isUser ? "user" : "assistant" });
+        });
+      }
+      // Strategy 2: older data-testid^="message" pattern
+      if (result.length === 0) {
+        document.querySelectorAll("[data-testid^='message']").forEach((el) => {
+          const tid = el.getAttribute("data-testid") || "";
+          result.push({ el, role: tid.includes("human") || tid.includes("user") ? "user" : "assistant" });
+        });
+      }
+      // Strategy 3: class-based selectors
       if (result.length === 0) {
         document.querySelectorAll(".font-claude-message, .font-user-message").forEach((el) => {
           result.push({
@@ -476,10 +498,9 @@
           });
         });
       }
-      // Strategy 3: generic article/section scan
+      // Strategy 4: generic article scan (last resort)
       if (result.length === 0) {
-        document.querySelectorAll("article, [class*='message']").forEach((el) => {
-          // Skip elements that are children of already-found elements
+        document.querySelectorAll("article").forEach((el) => {
           const text = el.innerText?.trim();
           if (text && text.length > 10) result.push({ el, role: "assistant" });
         });

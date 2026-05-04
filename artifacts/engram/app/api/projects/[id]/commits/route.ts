@@ -193,13 +193,13 @@ export async function GET(
 
   const { data: repo } = await admin
     .from("github_repos")
-    .select("id, repo_full_name, default_branch, provider, is_private")
+    .select("id, repo_full_name, default_branch, oauth_provider, is_private")
     .eq("id", project.github_repo_id)
     .single();
   if (!repo) return NextResponse.json({ commits: [] });
 
   const branch = repo.default_branch ?? "main";
-  const provider = (repo.provider ?? "github") as "github" | "gitlab";
+  const provider = ((repo.oauth_provider ?? "github") as "github" | "gitlab");
 
   // Fetch commits from provider.
   // For public repos, GitHub allows unauthenticated requests (60 req/hr limit).

@@ -155,12 +155,12 @@ export async function GET(
   if (!project?.github_repo_id) return NextResponse.json({ files: [] });
 
   const { data: repo } = await admin.from("github_repos")
-    .select("repo_full_name, provider")
+    .select("repo_full_name, oauth_provider")
     .eq("id", project.github_repo_id)
     .single();
   if (!repo) return NextResponse.json({ files: [] });
 
-  const provider = (repo.provider ?? "github") as "github" | "gitlab";
+  const provider = (repo.oauth_provider ?? "github") as "github" | "gitlab";
   let files: DiffFile[] = [];
 
   try {
