@@ -17,6 +17,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getProjectThreshold, recordRoutingDecision } from "@/lib/routing-threshold";
 
 const REPO_DETECT_THRESHOLD = 0.35;
 const CHUNK_MATCH_COUNT = 20;
@@ -182,26 +183,42 @@ export async function detectRepoFromConversation(opts: {
       }))
       .sort((a, b) => b.score - a.score);
 
-    const winner = ranked[0];
-    if (!winner || winner.score < threshold) return null;
+    // Find the project linked to the winning repo candidate (skip archived — F-13)
+    // Do this BEFORE threshold check so we can look up the per-project threshold (F-14)
+    const topCandidate = ranked[0];
+    if (!topCandidate) return null;
 
-    const runnerUpScore = ranked[1]?.score ?? 0;
-    const confident = winner.score - runnerUpScore >= CONFIDENCE_GAP;
-
-    // Find the project linked to the winning repo (skip archived — F-13)
     const { data: project } = await admin
       .from("projects")
       .select("id, name, is_archived")
       .eq("team_id", teamId)
-      .eq("github_repo_id", winner.repoId)
+      .eq("github_repo_id", topCandidate.repoId)
       .maybeSingle();
 
-    if (!project) {
-      // Repo is indexed but no project workspace linked yet
-      return null;
-    }
-    // Don't route to archived projects
+    if (!project) return null;
     if ((project as Record<string, unknown>).is_archived === true) return null;
+
+    // F-14: Get the adaptive per-project threshold (falls back to 0.35 if not yet calibrated)
+    let effectiveThreshold = threshold;
+    try {
+      effectiveThreshold = await getProjectThreshold(project.id, topCandidate.repoId);
+    } catch {
+      // Non-fatal — use the default threshold
+    }
+
+    // Record this routing attempt for future calibration (best-effort, non-blocking)
+    recordRoutingDecision({
+      projectId: project.id,
+      repoId: topCandidate.repoId,
+      similarity: topCandidate.score,
+      routed: topCandidate.score >= effectiveThreshold,
+    }).catch(() => {});
+
+    if (topCandidate.score < effectiveThreshold) return null;
+
+    const winner = topCandidate;
+    const runnerUpScore = ranked[1]?.score ?? 0;
+    const confident = winner.score - runnerUpScore >= CONFIDENCE_GAP;
 
     // Get repo info for display — use correct column name: repo_full_name
     const { data: repo } = await admin
@@ -214,7 +231,7 @@ export async function detectRepoFromConversation(opts: {
 
     console.log(
       `[repo-detector] semantic → "${repo.repo_full_name}" ` +
-        `score=${winner.score.toFixed(3)} confident=${confident}`
+        `score=${winner.score.toFixed(3)} threshold=${effectiveThreshold} confident=${confident}`
     );
 
     return {

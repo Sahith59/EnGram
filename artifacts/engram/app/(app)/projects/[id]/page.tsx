@@ -63,6 +63,13 @@ interface ConflictSummary {
   claim_b: TrustyClaim;
 }
 
+interface CodeAnchor {
+  file_path: string;
+  language: string | null;
+  snippet: string;
+  similarity: number;
+}
+
 interface ProjectBrief {
   project_id: string;
   project_name: string;
@@ -79,6 +86,7 @@ interface ProjectBrief {
     observation: TrustyClaim[];
   };
   conflicts: ConflictSummary[];
+  code_context: CodeAnchor[];  // F-09: code anchors from linked repo
   injection: { full: string; medium: string; compact: string };
   token_estimates: { full: number; medium: number; compact: number };
 }
@@ -835,6 +843,45 @@ function BriefTab({
           </div>
         )}
       </div>
+
+      {/* ── F-09: Code Anchors ────────────────────────────── */}
+      {brief.code_context && brief.code_context.length > 0 && (
+        <div className="mt-8">
+          <div className="flex items-center gap-2 mb-3">
+            <GitBranch className="h-3.5 w-3.5 text-gh-muted" />
+            <h2 className="text-xs font-mono uppercase tracking-wider text-gh-muted">
+              Code Anchors ({brief.code_context.length} files)
+            </h2>
+            <span className="text-[10px] text-gh-muted/60 ml-1">
+              — most relevant files based on your decisions
+            </span>
+          </div>
+          <div className="space-y-3">
+            {brief.code_context.map((anchor) => (
+              <div key={anchor.file_path}
+                className="rounded-lg border border-gh-border bg-gh-canvas overflow-hidden">
+                <div className="flex items-center gap-2 px-3 py-2 border-b border-gh-border/50 bg-gh-bg">
+                  <GitBranch className="h-3 w-3 text-gh-muted shrink-0" />
+                  <code className="text-xs text-engram-light font-mono flex-1 truncate">
+                    {anchor.file_path}
+                  </code>
+                  <span className="text-[10px] text-gh-muted shrink-0">
+                    {Math.round(anchor.similarity * 100)}% relevant
+                  </span>
+                  {anchor.language && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-gh-bg border border-gh-border/50 text-gh-muted font-mono shrink-0">
+                      {anchor.language}
+                    </span>
+                  )}
+                </div>
+                <pre className="p-3 text-[11px] font-mono text-gh-muted overflow-x-auto leading-relaxed whitespace-pre-wrap">
+                  {anchor.snippet}
+                </pre>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

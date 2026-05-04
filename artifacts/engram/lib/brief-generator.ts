@@ -15,6 +15,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { fetchCodeContext, type CodeAnchor } from "@/lib/code-context-fetcher";
 
 const STALENESS_DAYS = 60; // claims unseen for 60+ days are flagged
 
@@ -64,6 +65,8 @@ export interface ProjectBrief {
   };
   // Unresolved conflicts — must be shown before injection
   conflicts: ConflictSummary[];
+  // F-09: Code anchors from linked GitHub repo
+  code_context: CodeAnchor[];
   // Injection-ready markdown at three sizes
   injection: {
     full: string;     // ~1,400 tokens
@@ -85,10 +88,10 @@ export async function generateProjectBrief(
 ): Promise<ProjectBrief | null> {
   const admin = createAdminClient();
 
-  // Fetch project metadata
+  // Fetch project metadata (include team_id + github_repo_id for code context)
   const { data: project } = await admin
     .from("projects")
-    .select("id, name, snapshot_count")
+    .select("id, name, snapshot_count, team_id, github_repo_id")
     .eq("id", projectId)
     .single();
 
@@ -157,10 +160,27 @@ export async function generateProjectBrief(
       .sort(byConfidenceDesc),
   };
 
+  // F-09: Fetch code anchors from the linked GitHub repo (best-effort)
+  let codeContext: CodeAnchor[] = [];
+  const proj = project as unknown as { github_repo_id: string | null; team_id: string };
+  if (proj.github_repo_id && proj.team_id) {
+    try {
+      codeContext = await fetchCodeContext({
+        projectId,
+        githubRepoId: proj.github_repo_id,
+        teamId: proj.team_id,
+        claims: injectable,
+      });
+    } catch (err) {
+      console.warn("[brief] code context fetch failed:", err);
+    }
+  }
+
   const injection = buildInjectionBriefs(
     project.name,
     categories,
-    conflicts
+    conflicts,
+    codeContext
   );
 
   return {
@@ -172,6 +192,7 @@ export async function generateProjectBrief(
     unresolved_conflict_count: conflicts.length,
     categories,
     conflicts,
+    code_context: codeContext,
     injection,
     token_estimates: {
       full: Math.round(injection.full.length / 4),
@@ -259,7 +280,8 @@ function confTag(c: TrustyClaim): string {
 function buildInjectionBriefs(
   projectName: string,
   cats: ProjectBrief["categories"],
-  conflicts: ConflictSummary[]
+  conflicts: ConflictSummary[],
+  codeContext: CodeAnchor[] = []
 ): ProjectBrief["injection"] {
   const ts = new Date().toLocaleDateString();
 
@@ -314,6 +336,20 @@ function buildInjectionBriefs(
     sections.push("## Current State");
     cats.observation.slice(0, 8).forEach((c) => {
       sections.push(`- ${c.claim_text}${confTag(c)}${staleTag(c)}`);
+    });
+  }
+
+  // F-09: Code anchors (full brief only)
+  if (codeContext.length > 0) {
+    sections.push("## Code Anchors (from linked repository)");
+    sections.push(
+      "*These are the most relevant code locations based on the decisions above.*"
+    );
+    codeContext.forEach((anchor) => {
+      const lang = anchor.language ?? "";
+      sections.push(
+        `**\`${anchor.file_path}\`** (relevance: ${Math.round(anchor.similarity * 100)}%)\n\`\`\`${lang}\n${anchor.snippet}\n\`\`\``
+      );
     });
   }
 
