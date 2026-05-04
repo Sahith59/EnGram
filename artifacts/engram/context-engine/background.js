@@ -7,7 +7,7 @@
 // ============================================================
 
 const DEFAULT_API =
-  "https://35cc1161-d3be-4571-ba44-45b2cbf37965-00-1d7y2w5ur2vjj.spock.replit.dev:3000";
+  "https://35cc1161-d3be-4571-ba44-45b2cbf37965-00-1d7y2w5ur2vjj.spock.replit.dev";
 
 // ----- Storage helpers -----
 async function getApiUrl() {

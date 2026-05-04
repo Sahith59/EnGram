@@ -59,6 +59,7 @@ export async function GET(request: NextRequest) {
       "id, title, summary, ai_tool, tags, project, decision, created_by, created_at, visibility, author_handle",
       { count: "exact" }
     )
+    .order("updated_at", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false })
     .range(offset, offset + limit - 1);
 

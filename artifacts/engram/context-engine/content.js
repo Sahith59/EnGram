@@ -130,16 +130,21 @@
         if (content) pairs.push({ role, content });
       });
     } else if (TOOL === "claude") {
-      // Strategy 1 (2025): data-testid="human-turn" / "ai-turn"
-      const modernEls = document.querySelectorAll("[data-testid='human-turn'], [data-testid='ai-turn']");
+      // Strategy 1 (2025+): contains-based matching covers all known variants:
+      //   "human-turn", "user-human-turn" → user
+      //   "ai-turn", "assistant-turn"      → assistant
+      const modernEls = document.querySelectorAll(
+        "[data-testid*='human-turn'], [data-testid*='ai-turn'], [data-testid*='assistant-turn']"
+      );
       if (modernEls.length > 0) {
         modernEls.forEach((el) => {
-          const isUser = el.getAttribute("data-testid") === "human-turn";
+          const tid = el.getAttribute("data-testid") ?? "";
+          const isUser = tid.includes("human");
           const content = stripUiNoise(el.innerText?.trim() ?? "");
           if (content) pairs.push({ role: isUser ? "user" : "assistant", content });
         });
       }
-      // Strategy 2: older data-testid^="message" pattern
+      // Strategy 2: data-testid^="message" pattern (older Claude versions)
       if (pairs.length === 0) {
         document.querySelectorAll("[data-testid^='message']").forEach((el) => {
           const tid = el.getAttribute("data-testid") ?? "";
@@ -160,9 +165,32 @@
             if (content) pairs.push({ role, content });
           });
       }
+      // Strategy 4: broad turn sweep — catches any future testid rename
+      if (pairs.length === 0) {
+        document.querySelectorAll("[data-testid*='-turn']").forEach((el) => {
+          const tid = el.getAttribute("data-testid") ?? "";
+          const isUser = tid.includes("human") || tid.includes("user");
+          const content = stripUiNoise(el.innerText?.trim() ?? "");
+          if (content && content.length > 5)
+            pairs.push({ role: isUser ? "user" : "assistant", content });
+        });
+      }
     } else if (TOOL === "gemini") {
       document.querySelectorAll("user-query, model-response").forEach((el) => {
         const role = el.tagName.toLowerCase() === "user-query" ? "user" : "assistant";
+        // Skip Gemini 2.0 "thinking" / reasoning sections — they render as a
+        // model-response but contain thought-chunk or similar sentinel elements
+        // and should not be treated as real conversation turns.
+        if (
+          role === "assistant" &&
+          (el.querySelector("thought-chunk") ||
+            el.querySelector("[data-testid='thought']") ||
+            el.querySelector(".thinking-content") ||
+            el.classList.contains("is-thinking") ||
+            el.hasAttribute("data-is-thinking"))
+        ) {
+          return;
+        }
         // Prefer the actual rendered message body — falls back to innerText
         // if Gemini's structure shifts again. innerText alone picks up Material
         // icon ligatures (thumb_up, volume_up, …) and action labels which
@@ -172,7 +200,10 @@
           el.querySelector(".query-text") ||
           el.querySelector("message-content") ||
           el;
-        pairs.push({ role, content: stripUiNoise(body.innerText ?? "") });
+        const content = stripUiNoise(body.innerText ?? "");
+        // Skip trivially short assistant responses (UI chrome, loading dots, etc.)
+        if (role === "assistant" && content.length < 10) return;
+        pairs.push({ role, content });
       });
     }
     return pairs.filter((p) => p.content && p.content.length > 1);
@@ -474,12 +505,16 @@
     }
 
     if (TOOL === "claude") {
-      // Strategy 1 (2025): data-testid="human-turn" / "ai-turn"
-      const modernEls = document.querySelectorAll("[data-testid='human-turn'], [data-testid='ai-turn']");
+      // Strategy 1 (2025+): contains-based matching covers all known testid variants
+      //   "human-turn", "user-human-turn" → user
+      //   "ai-turn", "assistant-turn"      → assistant
+      const modernEls = document.querySelectorAll(
+        "[data-testid*='human-turn'], [data-testid*='ai-turn'], [data-testid*='assistant-turn']"
+      );
       if (modernEls.length > 0) {
         modernEls.forEach((el) => {
-          const isUser = el.getAttribute("data-testid") === "human-turn";
-          result.push({ el, role: isUser ? "user" : "assistant" });
+          const tid = el.getAttribute("data-testid") ?? "";
+          result.push({ el, role: tid.includes("human") ? "user" : "assistant" });
         });
       }
       // Strategy 2: older data-testid^="message" pattern
@@ -498,7 +533,14 @@
           });
         });
       }
-      // Strategy 4: generic article scan (last resort)
+      // Strategy 4: broad turn sweep (future-proof against testid renames)
+      if (result.length === 0) {
+        document.querySelectorAll("[data-testid*='-turn']").forEach((el) => {
+          const tid = el.getAttribute("data-testid") ?? "";
+          result.push({ el, role: tid.includes("human") || tid.includes("user") ? "user" : "assistant" });
+        });
+      }
+      // Strategy 5: generic article scan (last resort)
       if (result.length === 0) {
         document.querySelectorAll("article").forEach((el) => {
           const text = el.innerText?.trim();
@@ -508,12 +550,22 @@
     }
 
     if (TOOL === "gemini") {
-      // Strategy 1: Gemini custom elements — very stable
+      // Strategy 1: Gemini custom elements — very stable.
+      // Skip model-response elements that are Gemini 2.0 "thinking" sections —
+      // they render as a model-response but should not be injected or extracted.
       document.querySelectorAll("user-query, model-response").forEach((el) => {
-        result.push({
-          el,
-          role: el.tagName.toLowerCase() === "user-query" ? "user" : "assistant",
-        });
+        const role = el.tagName.toLowerCase() === "user-query" ? "user" : "assistant";
+        if (
+          role === "assistant" &&
+          (el.querySelector("thought-chunk") ||
+            el.querySelector("[data-testid='thought']") ||
+            el.querySelector(".thinking-content") ||
+            el.classList.contains("is-thinking") ||
+            el.hasAttribute("data-is-thinking"))
+        ) {
+          return;
+        }
+        result.push({ el, role });
       });
       // Strategy 2: data-testid for newer Gemini versions
       if (result.length === 0) {
@@ -672,7 +724,10 @@
     if (resp?.ok) {
       btn.classList.add("engram-btn-saved");
       iconEl.textContent  = "✓";
-      labelEl.textContent = `Saved to ${label}`;
+      // Distinguish a real new save from a duplicate
+      labelEl.textContent = resp.data?.duplicate
+        ? "Already in ENGRAM"
+        : `Saved to ${label}`;
       setTimeout(() => {
         btn.classList.remove("engram-btn-saved");
         iconEl.textContent  = "⬡";
