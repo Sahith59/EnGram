@@ -13,6 +13,7 @@ import {
   detectRepoFromConversation,
   DetectedRepo,
 } from "@/lib/repo-detector";
+import { extractClaimsFromSnapshot } from "@/lib/claims-extractor";
 
 export function OPTIONS(request: NextRequest) {
   return corsOptions(request);
@@ -528,6 +529,7 @@ Call the save_handoff_brief tool with the structured result.`,
     }
 
     // If no semantic match, fall back to centroid clustering asynchronously
+    // (clustering will trigger claims extraction once project_id is assigned)
     if (!detectedRepo && embeddingVec && resolvedTeamId) {
       Promise.resolve().then(() =>
         assignSnapshotToProject({
@@ -538,6 +540,23 @@ Call the save_handoff_brief tool with the structured result.`,
           summary: extraction.summary,
         }).catch((e) =>
           console.warn("[capture] clustering fire-and-forget error:", e)
+        )
+      );
+    }
+
+    // If repo routing fired immediately (Tier 1 or 2), trigger claims extraction now
+    if (detectedRepo && userId && resolvedTeamId) {
+      Promise.resolve().then(() =>
+        extractClaimsFromSnapshot({
+          snapshotId: updated.id,
+          projectId: detectedRepo!.projectId,
+          teamId: resolvedTeamId!,
+          createdBy: userId!,
+          conversationText,
+          title: extraction.title,
+          summary: extraction.summary,
+        }).catch((e) =>
+          console.warn("[capture] claims extraction error (update):", e)
         )
       );
     }
@@ -623,6 +642,7 @@ Call the save_handoff_brief tool with the structured result.`,
   }
 
   // If no semantic match, fall back to centroid clustering asynchronously
+  // (clustering will trigger claims extraction once project_id is assigned)
   if (!detectedRepo && embeddingVec && resolvedTeamId && snapshot) {
     Promise.resolve().then(() =>
       assignSnapshotToProject({
@@ -633,6 +653,23 @@ Call the save_handoff_brief tool with the structured result.`,
         summary: extraction.summary,
       }).catch((e) =>
         console.warn("[capture] clustering fire-and-forget error:", e)
+      )
+    );
+  }
+
+  // If repo routing fired immediately (Tier 1 or 2), trigger claims extraction now
+  if (detectedRepo && userId && resolvedTeamId && snapshot) {
+    Promise.resolve().then(() =>
+      extractClaimsFromSnapshot({
+        snapshotId: snapshot.id,
+        projectId: detectedRepo!.projectId,
+        teamId: resolvedTeamId!,
+        createdBy: userId!,
+        conversationText,
+        title: extraction.title,
+        summary: extraction.summary,
+      }).catch((e) =>
+        console.warn("[capture] claims extraction error (insert):", e)
       )
     );
   }

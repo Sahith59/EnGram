@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   FolderGit2, ArrowLeft, Github, Lock, Globe, Users, BookOpen,
   GitCommit, MessageSquare, Sparkles, ExternalLink, Clock,
   Crown, UserPlus, Trash2, Copy, Check, Send, Loader2,
-  ChevronRight, X, GitBranch,
+  ChevronRight, X, GitBranch, Shield, AlertTriangle,
+  CheckCircle2, XCircle, ChevronDown, Zap, RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
@@ -34,12 +35,56 @@ type Project = {
 };
 type AskSource = { type: "snapshot" | "github"; title: string; excerpt: string; tool?: string; path?: string; language?: string };
 
+/* ─── Brief types ────────────────────────────────────────── */
+type ClaimType = "decision" | "constraint" | "next_step" | "technology" | "dead_end" | "observation";
+type ClaimStatus = "active" | "superseded" | "abandoned" | "conflicted";
+
+interface TrustyClaim {
+  id: string;
+  claim_text: string;
+  claim_type: ClaimType;
+  status: ClaimStatus;
+  confidence_score: number;
+  is_stale: boolean;
+  reinforcement_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  snapshot_id: string;
+  snapshot_title: string | null;
+}
+
+interface ConflictSummary {
+  id: string;
+  claim_a: TrustyClaim;
+  claim_b: TrustyClaim;
+}
+
+interface ProjectBrief {
+  project_id: string;
+  project_name: string;
+  generated_at: string;
+  capture_count: number;
+  claim_count: number;
+  unresolved_conflict_count: number;
+  categories: {
+    decision: TrustyClaim[];
+    constraint: TrustyClaim[];
+    next_step: TrustyClaim[];
+    technology: TrustyClaim[];
+    dead_end: TrustyClaim[];
+    observation: TrustyClaim[];
+  };
+  conflicts: ConflictSummary[];
+  injection: { full: string; medium: string; compact: string };
+  token_estimates: { full: number; medium: number; compact: number };
+}
+
 /* ─── Helpers ────────────────────────────────────────────── */
 const TOOL_LABEL: Record<string, string> = { chatgpt: "ChatGPT", claude: "Claude", gemini: "Gemini", other: "Other" };
 const TOOL_DOT: Record<string, string> = { chatgpt: "bg-tool-chatgpt", claude: "bg-tool-claude", gemini: "bg-tool-gemini", other: "bg-gh-muted" };
 const TOOL_TEXT: Record<string, string> = { chatgpt: "text-tool-chatgpt", claude: "text-tool-claude", gemini: "text-tool-gemini" };
 
-type Tab = "feed" | "ask" | "members";
+type Tab = "feed" | "ask" | "brief" | "members";
 
 /* ══════════════════════════════════════════════════════════ */
 export default function ProjectWorkspacePage() {
@@ -137,7 +182,7 @@ export default function ProjectWorkspacePage() {
 
           {/* ── Tabs ──────────────────────────────────────── */}
           <div className="flex items-center gap-1 mt-4 -mb-px">
-            {(["feed", "ask", "members"] as Tab[]).map((tab) => (
+            {(["feed", "ask", "brief", "members"] as Tab[]).map((tab) => (
               <button key={tab}
                 onClick={() => switchTab(tab)}
                 className={cn(
@@ -148,8 +193,9 @@ export default function ProjectWorkspacePage() {
                 )}>
                 {tab === "feed" && <MessageSquare className="h-3.5 w-3.5" />}
                 {tab === "ask" && <Sparkles className="h-3.5 w-3.5" />}
+                {tab === "brief" && <Shield className="h-3.5 w-3.5" />}
                 {tab === "members" && <Users className="h-3.5 w-3.5" />}
-                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                {tab === "brief" ? "Trust Brief" : tab.charAt(0).toUpperCase() + tab.slice(1)}
                 {tab === "feed" && snapshots.length > 0 && (
                   <span className="text-[10px] bg-gh-canvas border border-gh-border px-1.5 rounded-full text-gh-muted">
                     {snapshots.length}
@@ -177,6 +223,11 @@ export default function ProjectWorkspacePage() {
           {activeTab === "ask" && (
             <motion.div key="ask" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
               <AskTab projectId={projectId} projectName={project.name} hasRepo={!!project.github_repo_id} />
+            </motion.div>
+          )}
+          {activeTab === "brief" && (
+            <motion.div key="brief" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+              <BriefTab projectId={projectId} projectName={project.name} captureCount={project.snapshot_count} />
             </motion.div>
           )}
           {activeTab === "members" && (
@@ -277,6 +328,489 @@ function FeedTab({ snapshots, projectName, projectId }: { snapshots: Snapshot[];
 }
 
 /* ══════════════════════════════════════════════════════════
+   TRUST BRIEF TAB — structured, attributable project brief
+══════════════════════════════════════════════════════════ */
+
+type BriefSize = "full" | "medium" | "compact";
+
+const CLAIM_TYPE_LABELS: Record<ClaimType, string> = {
+  decision: "Decisions Made",
+  constraint: "Constraints & Non-Goals",
+  next_step: "Next Steps",
+  technology: "Active Technologies",
+  dead_end: "Dead Ends",
+  observation: "Current State",
+};
+
+const CLAIM_TYPE_COLOR: Record<ClaimType, string> = {
+  decision: "text-engram-light border-engram/30 bg-engram/5",
+  constraint: "text-yellow-400 border-yellow-400/30 bg-yellow-400/5",
+  next_step: "text-green-400 border-green-400/30 bg-green-400/5",
+  technology: "text-blue-400 border-blue-400/30 bg-blue-400/5",
+  dead_end: "text-red-400 border-red-400/30 bg-red-400/5",
+  observation: "text-gh-muted border-gh-border bg-gh-canvas",
+};
+
+const CLAIM_TYPE_DOT: Record<ClaimType, string> = {
+  decision: "bg-engram",
+  constraint: "bg-yellow-400",
+  next_step: "bg-green-400",
+  technology: "bg-blue-400",
+  dead_end: "bg-red-400",
+  observation: "bg-gh-muted",
+};
+
+function ConfidenceBar({ score }: { score: number }) {
+  const pct = Math.round(score * 100);
+  const color = pct >= 80 ? "bg-green-500" : pct >= 50 ? "bg-yellow-400" : "bg-red-400";
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="h-1 w-16 bg-gh-border rounded-full overflow-hidden">
+        <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-[10px] text-gh-muted tabular-nums">{pct}%</span>
+    </div>
+  );
+}
+
+function ClaimCard({
+  claim, onUpdateStatus,
+}: {
+  claim: TrustyClaim;
+  onUpdateStatus: (claimId: string, status: "abandoned" | "superseded" | "active") => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [updating, setUpdating] = useState(false);
+
+  async function handleStatus(status: "abandoned" | "superseded" | "active") {
+    setUpdating(true);
+    await onUpdateStatus(claim.id, status);
+    setUpdating(false);
+  }
+
+  const daysSince = Math.floor(
+    (Date.now() - new Date(claim.last_seen_at).getTime()) / (1000 * 60 * 60 * 24)
+  );
+
+  return (
+    <div className={cn(
+      "rounded-lg border p-3 text-sm transition-colors",
+      claim.is_stale ? "border-yellow-400/20 bg-yellow-400/3" : "border-gh-border bg-gh-canvas"
+    )}>
+      <div className="flex items-start gap-3">
+        <div className={cn("h-2 w-2 rounded-full mt-1.5 shrink-0", CLAIM_TYPE_DOT[claim.claim_type])} />
+        <div className="flex-1 min-w-0">
+          <p className={cn("text-sm leading-snug", claim.claim_type === "dead_end" ? "line-through text-gh-muted" : "text-gh-text")}>
+            {claim.claim_text}
+          </p>
+          <div className="flex items-center gap-3 mt-2">
+            <ConfidenceBar score={claim.confidence_score} />
+            {claim.is_stale && (
+              <span className="flex items-center gap-1 text-[10px] text-yellow-400">
+                <AlertTriangle className="h-2.5 w-2.5" />possibly stale ({daysSince}d ago)
+              </span>
+            )}
+            {claim.reinforcement_count > 1 && (
+              <span className="text-[10px] text-gh-muted">
+                seen {claim.reinforcement_count}× across captures
+              </span>
+            )}
+            <button
+              onClick={() => setExpanded((e) => !e)}
+              className="text-[10px] text-gh-muted hover:text-gh-text transition-colors ml-auto">
+              {expanded ? "▴ less" : "▾ source"}
+            </button>
+          </div>
+
+          {expanded && (
+            <div className="mt-3 space-y-2 border-t border-gh-border pt-3">
+              {claim.snapshot_title && (
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="h-3 w-3 text-gh-muted shrink-0" />
+                  <Link href={`/context/${claim.snapshot_id}`}
+                    className="text-[10px] text-gh-muted hover:text-engram-light underline underline-offset-2 truncate">
+                    Source: {claim.snapshot_title}
+                  </Link>
+                </div>
+              )}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] text-gh-muted">
+                  First seen {new Date(claim.first_seen_at).toLocaleDateString()} ·
+                  Last seen {new Date(claim.last_seen_at).toLocaleDateString()}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 mt-2">
+                {claim.status !== "abandoned" && (
+                  <button
+                    onClick={() => handleStatus("abandoned")}
+                    disabled={updating}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-red-400/30 text-red-400 hover:bg-red-400/10 transition-colors disabled:opacity-50">
+                    {updating ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <XCircle className="h-2.5 w-2.5" />}
+                    Mark abandoned
+                  </button>
+                )}
+                {claim.status === "abandoned" && (
+                  <button
+                    onClick={() => handleStatus("active")}
+                    disabled={updating}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-green-400/30 text-green-400 hover:bg-green-400/10 transition-colors disabled:opacity-50">
+                    <CheckCircle2 className="h-2.5 w-2.5" />Restore
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConflictCard({
+  conflict,
+  projectId,
+  onResolved,
+}: {
+  conflict: ConflictSummary;
+  projectId: string;
+  onResolved: () => void;
+}) {
+  const [resolving, setResolving] = useState(false);
+  const [chosen, setChosen] = useState<string | null>(null);
+
+  async function resolve(winnerId: string) {
+    setChosen(winnerId);
+    setResolving(true);
+    try {
+      await fetch(`/api/projects/${projectId}/conflicts/${conflict.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ winner_claim_id: winnerId }),
+      });
+      onResolved();
+    } finally {
+      setResolving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-red-400/30 bg-red-400/5 p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Zap className="h-4 w-4 text-red-400 shrink-0" />
+        <span className="text-sm font-medium text-red-400">Decision Conflict Detected</span>
+        <span className="text-[10px] text-gh-muted ml-auto">
+          Resolve before injecting into AI
+        </span>
+      </div>
+
+      <div className="space-y-2">
+        {[conflict.claim_a, conflict.claim_b].map((claim) => (
+          <div key={claim.id}
+            className={cn(
+              "flex items-start gap-3 p-3 rounded-lg border transition-colors cursor-pointer",
+              chosen === claim.id
+                ? "border-green-400/50 bg-green-400/5"
+                : "border-gh-border bg-gh-canvas hover:border-engram/40"
+            )}
+            onClick={() => !resolving && resolve(claim.id)}>
+            <div className="h-2 w-2 rounded-full bg-gh-muted mt-1.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-gh-text leading-snug">{claim.claim_text}</p>
+              <p className="text-[10px] text-gh-muted mt-1">
+                {claim.snapshot_title ?? "Captured conversation"} ·{" "}
+                {new Date(claim.last_seen_at).toLocaleDateString()}
+              </p>
+            </div>
+            {resolving && chosen === claim.id && (
+              <Loader2 className="h-4 w-4 text-engram-light animate-spin shrink-0" />
+            )}
+            {chosen !== claim.id && !resolving && (
+              <span className="text-[10px] text-gh-muted shrink-0">Click to keep →</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BriefTab({
+  projectId, projectName, captureCount,
+}: {
+  projectId: string;
+  projectName: string;
+  captureCount: number;
+}) {
+  const [brief, setBrief] = useState<ProjectBrief | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [briefSize, setBriefSize] = useState<BriefSize>("full");
+  const [copied, setCopied] = useState(false);
+  const [showDeadEnds, setShowDeadEnds] = useState(false);
+  const [showObservations, setShowObservations] = useState(false);
+
+  const loadBrief = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/projects/${projectId}/brief`);
+      if (r.ok) {
+        const d = await r.json();
+        setBrief(d);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => { loadBrief(); }, [loadBrief]);
+
+  async function updateClaimStatus(claimId: string, status: "abandoned" | "superseded" | "active") {
+    await fetch(`/api/projects/${projectId}/claims/${claimId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    loadBrief();
+  }
+
+  function copyBrief() {
+    if (!brief) return;
+    const text = brief.injection[briefSize];
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-3">
+        <Loader2 className="h-6 w-6 text-engram-light animate-spin" />
+        <p className="text-sm text-gh-muted">Building trustworthy brief…</p>
+      </div>
+    );
+  }
+
+  if (!brief || brief.claim_count === 0) {
+    return (
+      <div className="text-center py-20">
+        <Shield className="h-12 w-12 text-gh-muted/30 mx-auto mb-4" />
+        <h3 className="text-lg font-medium text-gh-text mb-2">No claims yet</h3>
+        <p className="text-sm text-gh-muted max-w-sm mx-auto mb-6">
+          Capture AI conversations for <strong>{projectName}</strong> and ENGRAM will automatically
+          extract structured, trustworthy claims from them. Each claim traces back to its source.
+        </p>
+        {captureCount === 0 && (
+          <p className="text-xs text-gh-muted">
+            This project has no captures yet. Use the Chrome extension to capture conversations.
+          </p>
+        )}
+        {captureCount > 0 && (
+          <p className="text-xs text-gh-muted">
+            {captureCount} capture{captureCount !== 1 ? "s" : ""} found — claims are processed in the background.
+            Refresh in a moment.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  const { categories, conflicts } = brief;
+  const totalInjectable =
+    categories.decision.length +
+    categories.constraint.length +
+    categories.next_step.length +
+    categories.technology.length;
+
+  return (
+    <div className="max-w-4xl">
+      {/* ── Header stats ─────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-4 mb-6 p-4 rounded-lg border border-gh-border bg-gh-canvas">
+        <div className="flex items-center gap-2">
+          <Shield className="h-4 w-4 text-engram-light" />
+          <span className="text-sm font-medium text-gh-text">Trust Brief</span>
+        </div>
+        <div className="flex items-center gap-4 text-xs text-gh-muted">
+          <span>{brief.claim_count} claims</span>
+          <span>{captureCount} captures</span>
+          <span>Updated {new Date(brief.generated_at).toLocaleTimeString()}</span>
+        </div>
+        {conflicts.length > 0 && (
+          <div className="flex items-center gap-1 text-xs text-red-400 ml-auto">
+            <AlertTriangle className="h-3.5 w-3.5" />
+            {conflicts.length} conflict{conflicts.length !== 1 ? "s" : ""} need resolution
+          </div>
+        )}
+        <button onClick={loadBrief} className="p-1.5 rounded hover:bg-gh-bg text-gh-muted hover:text-gh-text transition-colors ml-auto">
+          <RefreshCw className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {/* ── Copy for AI ──────────────────────────────────── */}
+      <div className="flex items-center gap-3 mb-6 p-4 rounded-lg border border-engram/20 bg-engram/5">
+        <Zap className="h-4 w-4 text-engram-light shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm font-medium text-engram-light">Copy for AI Injection</p>
+          <p className="text-xs text-gh-muted">
+            {totalInjectable} claims ready to inject ·{" "}
+            {brief.conflicts.length > 0
+              ? `⚡ ${brief.conflicts.length} conflict${brief.conflicts.length !== 1 ? "s" : ""} excluded until resolved`
+              : "no conflicts"}
+          </p>
+        </div>
+        {/* Size picker */}
+        <div className="flex items-center gap-1 rounded-lg border border-gh-border bg-gh-bg p-0.5">
+          {(["compact", "medium", "full"] as BriefSize[]).map((size) => (
+            <button
+              key={size}
+              onClick={() => setBriefSize(size)}
+              className={cn(
+                "px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+                briefSize === size
+                  ? "bg-engram text-white"
+                  : "text-gh-muted hover:text-gh-text"
+              )}>
+              {size === "full"
+                ? `Full (~${brief.token_estimates.full.toLocaleString()}t)`
+                : size === "medium"
+                ? `Medium (~${brief.token_estimates.medium.toLocaleString()}t)`
+                : `Compact (~${brief.token_estimates.compact.toLocaleString()}t)`}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={copyBrief}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-engram text-white text-sm font-medium hover:bg-engram/90 transition-colors">
+          {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+          {copied ? "Copied!" : "Copy Brief"}
+        </button>
+      </div>
+
+      {/* ── Conflicts (always shown first) ───────────────── */}
+      {conflicts.length > 0 && (
+        <div className="mb-6 space-y-3">
+          <h2 className="text-xs font-mono uppercase tracking-wider text-red-400 flex items-center gap-2">
+            <Zap className="h-3.5 w-3.5" />
+            Resolve Before Injecting ({conflicts.length})
+          </h2>
+          {conflicts.map((conflict) => (
+            <ConflictCard
+              key={conflict.id}
+              conflict={conflict}
+              projectId={projectId}
+              onResolved={loadBrief}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* ── Claims by category ───────────────────────────── */}
+      <div className="space-y-6">
+        {(["decision", "constraint", "next_step", "technology"] as ClaimType[]).map((type) => {
+          const items = categories[type];
+          if (!items.length) return null;
+          return (
+            <ClaimSection
+              key={type}
+              type={type}
+              claims={items}
+              onUpdateStatus={updateClaimStatus}
+            />
+          );
+        })}
+
+        {/* Dead ends — collapsed by default */}
+        {categories.dead_end.length > 0 && (
+          <div>
+            <button
+              onClick={() => setShowDeadEnds((v) => !v)}
+              className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-gh-muted hover:text-gh-text transition-colors mb-3">
+              <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", showDeadEnds && "rotate-180")} />
+              Dead Ends ({categories.dead_end.length}) — do not revisit
+            </button>
+            {showDeadEnds && (
+              <div className="space-y-2">
+                {categories.dead_end.map((c) => (
+                  <ClaimCard key={c.id} claim={c} onUpdateStatus={updateClaimStatus} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Observations — collapsed by default */}
+        {categories.observation.length > 0 && (
+          <div>
+            <button
+              onClick={() => setShowObservations((v) => !v)}
+              className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-gh-muted hover:text-gh-text transition-colors mb-3">
+              <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", showObservations && "rotate-180")} />
+              Observations ({categories.observation.length})
+            </button>
+            {showObservations && (
+              <div className="space-y-2">
+                {categories.observation.map((c) => (
+                  <ClaimCard key={c.id} claim={c} onUpdateStatus={updateClaimStatus} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ClaimSection({
+  type, claims, onUpdateStatus,
+}: {
+  type: ClaimType;
+  claims: TrustyClaim[];
+  onUpdateStatus: (id: string, status: "abandoned" | "superseded" | "active") => void;
+}) {
+  const staleCount = claims.filter((c) => c.is_stale).length;
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        <h2 className="text-xs font-mono uppercase tracking-wider text-gh-muted flex items-center gap-2">
+          <div className={cn("h-2 w-2 rounded-full", CLAIM_TYPE_DOT[type])} />
+          {CLAIM_TYPE_LABELS[type]} ({claims.length})
+        </h2>
+        {staleCount > 0 && (
+          <span className="text-[10px] text-yellow-400 flex items-center gap-1">
+            <AlertTriangle className="h-2.5 w-2.5" />
+            {staleCount} possibly stale
+          </span>
+        )}
+      </div>
+
+      {type === "technology" ? (
+        // Technologies shown as pills
+        <div className="flex flex-wrap gap-2">
+          {claims.map((c) => (
+            <span
+              key={c.id}
+              title={`Confidence: ${Math.round(c.confidence_score * 100)}% · Last seen: ${new Date(c.last_seen_at).toLocaleDateString()}`}
+              className={cn(
+                "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium",
+                c.is_stale ? "border-yellow-400/30 text-yellow-400 bg-yellow-400/5" : CLAIM_TYPE_COLOR[type]
+              )}>
+              <code>{c.claim_text}</code>
+              {c.is_stale && <AlertTriangle className="h-2.5 w-2.5" />}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {claims.map((c) => (
+            <ClaimCard key={c.id} claim={c} onUpdateStatus={onUpdateStatus} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════
    ASK TAB — ENGRAM Ask scoped to this project
 ══════════════════════════════════════════════════════════ */
 function AskTab({ projectId, projectName, hasRepo }: { projectId: string; projectName: string; hasRepo: boolean }) {
@@ -314,7 +848,6 @@ function AskTab({ projectId, projectName, hasRepo }: { projectId: string; projec
 
   return (
     <div className="max-w-3xl">
-      {/* Context badge */}
       <div className="flex items-center gap-2 mb-6 p-3 rounded-lg bg-engram/5 border border-engram/20">
         <Sparkles className="h-4 w-4 text-engram-light shrink-0" />
         <div>
@@ -326,15 +859,12 @@ function AskTab({ projectId, projectName, hasRepo }: { projectId: string; projec
         </div>
       </div>
 
-      {/* Conversation history */}
       {history.length > 0 && (
         <div className="space-y-6 mb-8">
           {history.map((item, i) => (
             <div key={i} className="space-y-3">
               <div className="flex justify-end">
-                <div className="max-w-[80%] bg-engram text-white rounded-lg px-4 py-2.5 text-sm">
-                  {item.q}
-                </div>
+                <div className="max-w-[80%] bg-engram text-white rounded-lg px-4 py-2.5 text-sm">{item.q}</div>
               </div>
               <div className="rounded-lg border border-gh-border bg-gh-canvas p-4">
                 <p className="text-sm text-gh-text leading-relaxed whitespace-pre-wrap">{item.a}</p>
@@ -345,7 +875,6 @@ function AskTab({ projectId, projectName, hasRepo }: { projectId: string; projec
         </div>
       )}
 
-      {/* Live answer */}
       {loading && (
         <div className="mb-6 rounded-lg border border-gh-border bg-gh-canvas p-4">
           <div className="flex items-center gap-2 text-gh-muted text-sm">
@@ -363,7 +892,6 @@ function AskTab({ projectId, projectName, hasRepo }: { projectId: string; projec
 
       <div ref={bottomRef} />
 
-      {/* Suggestions */}
       {history.length === 0 && !loading && (
         <div className="mb-6 grid grid-cols-2 gap-2">
           {[
@@ -372,7 +900,7 @@ function AskTab({ projectId, projectName, hasRepo }: { projectId: string; projec
             hasRepo ? "How does authentication work in this codebase?" : "What are the open questions?",
             hasRepo ? "What are the recent commits about?" : "What decisions are pending?",
           ].map((sug) => (
-            <button key={sug} onClick={() => { setQuestion(sug); }}
+            <button key={sug} onClick={() => setQuestion(sug)}
               className="text-left text-xs text-gh-muted p-3 rounded-lg border border-gh-border bg-gh-canvas hover:border-engram/40 hover:text-gh-text transition-colors leading-relaxed">
               {sug}
             </button>
@@ -380,7 +908,6 @@ function AskTab({ projectId, projectName, hasRepo }: { projectId: string; projec
         </div>
       )}
 
-      {/* Input */}
       <div className="flex gap-2">
         <input
           value={question}
@@ -466,7 +993,6 @@ function MembersTab({ projectId, members, isOwner, onRefresh }: {
 
   return (
     <div className="max-w-2xl">
-      {/* Invite section — only for owners */}
       {isOwner && (
         <div className="mb-8 p-5 rounded-lg border border-gh-border bg-gh-canvas">
           <div className="flex items-center gap-2 mb-3">
@@ -501,7 +1027,6 @@ function MembersTab({ projectId, members, isOwner, onRefresh }: {
         </div>
       )}
 
-      {/* Member list */}
       <div>
         <h3 className="text-xs font-mono uppercase tracking-wider text-gh-muted mb-4">
           Members ({members.length})
@@ -519,46 +1044,30 @@ function MembersTab({ projectId, members, isOwner, onRefresh }: {
                 <motion.div key={m.id}
                   initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
                   className="flex items-center gap-3 p-3 rounded-lg border border-gh-border bg-gh-canvas group">
-                  {/* Avatar */}
-                  <div className="h-9 w-9 rounded-full overflow-hidden bg-engram/20 border border-gh-border shrink-0 flex items-center justify-center">
-                    {m.profile?.avatar_url
-                      ? <img src={m.profile.avatar_url} alt={displayName} className="h-full w-full object-cover" />
-                      : <span className="text-sm font-medium text-engram-light">
-                          {displayName.charAt(0).toUpperCase()}
-                        </span>}
+                  <div className="h-8 w-8 rounded-full bg-engram/10 border border-engram/20 flex items-center justify-center text-sm font-medium text-engram-light shrink-0">
+                    {displayName.charAt(0).toUpperCase()}
                   </div>
-
-                  {/* Info */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-gh-text truncate">{displayName}</span>
+                      <span className="text-sm text-gh-text font-medium truncate">{displayName}</span>
                       {m.is_self && <span className="text-[10px] text-gh-muted">(you)</span>}
                     </div>
-                    {m.profile?.email && (
-                      <p className="text-xs text-gh-muted truncate">{m.profile.email}</p>
-                    )}
-                    <p className="text-[10px] text-gh-muted">
-                      Joined {new Date(m.joined_at).toLocaleDateString()}
-                    </p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      {m.role === "owner" && <Crown className="h-3 w-3 text-yellow-400" />}
+                      <span className="text-[10px] text-gh-muted capitalize">{m.role}</span>
+                      <span className="text-[10px] text-gh-muted">
+                        · Joined {new Date(m.joined_at).toLocaleDateString()}
+                      </span>
+                    </div>
                   </div>
-
-                  {/* Role badge */}
-                  <div className={cn(
-                    "flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono uppercase tracking-wider shrink-0",
-                    m.role === "owner" ? "bg-engram/10 text-engram-light border border-engram/20" : "bg-gh-bg text-gh-muted border border-gh-border"
-                  )}>
-                    {m.role === "owner" && <Crown className="h-2.5 w-2.5" />}
-                    {m.role}
-                  </div>
-
-                  {/* Remove */}
                   {isOwner && !m.is_self && (
                     <button
                       onClick={() => removeMember(m.user_id)}
                       disabled={removing === m.user_id}
-                      className="p-1.5 rounded text-gh-muted hover:text-red-400 hover:bg-gh-bg transition-colors opacity-0 group-hover:opacity-100 shrink-0"
-                      title="Remove member">
-                      {removing === m.user_id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                      className="p-1.5 rounded hover:bg-red-500/10 text-gh-muted hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-50">
+                      {removing === m.user_id
+                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        : <Trash2 className="h-3.5 w-3.5" />}
                     </button>
                   )}
                 </motion.div>
@@ -571,22 +1080,21 @@ function MembersTab({ projectId, members, isOwner, onRefresh }: {
   );
 }
 
-/* ─── Loading skeleton ───────────────────────────────────── */
+/* ── Loading skeleton ─────────────────────────────────────── */
 function LoadingSkeleton() {
   return (
     <div className="min-h-screen">
       <div className="border-b border-gh-border bg-gh-bg px-6 md:px-10 py-4">
-        <div className="max-w-6xl mx-auto space-y-3">
-          <div className="h-4 w-40 rounded bg-gh-canvas animate-pulse" />
-          <div className="h-8 w-72 rounded bg-gh-canvas animate-pulse" />
-          <div className="h-4 w-96 rounded bg-gh-canvas animate-pulse" />
-          <div className="flex gap-2 mt-4">
-            {[...Array(3)].map((_, i) => <div key={i} className="h-8 w-20 rounded bg-gh-canvas animate-pulse" />)}
-          </div>
+        <div className="max-w-6xl mx-auto">
+          <div className="h-4 w-32 bg-gh-canvas rounded animate-pulse mb-4" />
+          <div className="h-6 w-48 bg-gh-canvas rounded animate-pulse mb-2" />
+          <div className="h-3 w-64 bg-gh-canvas rounded animate-pulse" />
         </div>
       </div>
       <div className="px-6 md:px-10 py-8 max-w-6xl mx-auto space-y-3">
-        {[...Array(4)].map((_, i) => <div key={i} className="h-28 rounded-lg border border-gh-border bg-gh-canvas animate-pulse" />)}
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="h-20 bg-gh-canvas rounded-lg border border-gh-border animate-pulse" />
+        ))}
       </div>
     </div>
   );

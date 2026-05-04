@@ -18,6 +18,7 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { anthropic } from "@/lib/anthropic";
+import { extractClaimsFromSnapshot } from "@/lib/claims-extractor";
 
 const CLUSTER_THRESHOLD = 0.72;
 const MAX_PROJECTS_TO_CHECK = 50;
@@ -223,6 +224,40 @@ export async function assignSnapshotToProject(opts: {
       .from("context_snapshots")
       .update({ project_id: projectId })
       .eq("id", snapshotId);
+
+    // 3. Trigger claims extraction now that project_id is known.
+    //    Fetch the snapshot content we need, then run extraction async.
+    Promise.resolve().then(async () => {
+      try {
+        const { data: snap } = await admin
+          .from("context_snapshots")
+          .select("created_by, raw_conversation, title, summary")
+          .eq("id", snapshotId)
+          .single();
+
+        if (!snap) return;
+
+        const pairs = Array.isArray(snap.raw_conversation)
+          ? (snap.raw_conversation as { role: string; content: string }[])
+          : [];
+        const conversationText = pairs
+          .map((p) => `${p.role.toUpperCase()}: ${p.content}`)
+          .join("\n\n")
+          .slice(0, 120_000);
+
+        await extractClaimsFromSnapshot({
+          snapshotId,
+          projectId,
+          teamId,
+          createdBy: snap.created_by ?? "",
+          conversationText,
+          title: snap.title ?? "",
+          summary: snap.summary ?? "",
+        });
+      } catch (e) {
+        console.warn("[clustering] claims extraction error:", e);
+      }
+    });
 
     return {
       projectId,
