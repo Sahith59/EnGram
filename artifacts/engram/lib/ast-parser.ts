@@ -365,6 +365,34 @@ function extractPythonEdges(tree: Parser.Tree, sourceFile: string): AstEdge[] {
         }
         break;
       }
+
+      case "call": {
+        // Python: call node has attribute child (obj.method) or identifier (func)
+        const callee = node.child(0);
+        if (callee?.type === "attribute") {
+          // attribute node: child(0) = object, child(2) = method
+          const obj = callee.child(0);
+          const method = callee.child(2);
+          if (obj?.type === "identifier" && method) {
+            edges.push({
+              source_file: sourceFile,
+              target_file: sourceFile,
+              edge_type: "call",
+              symbol_name: `${obj.text}.${method.text}`,
+              language: "python",
+            });
+          }
+        } else if (callee?.type === "identifier") {
+          edges.push({
+            source_file: sourceFile,
+            target_file: sourceFile,
+            edge_type: "call",
+            symbol_name: callee.text,
+            language: "python",
+          });
+        }
+        break;
+      }
     }
   }
 
@@ -449,7 +477,7 @@ function collectRustPath(node: SyntaxNode): string {
 function extractRustEdges(tree: Parser.Tree, sourceFile: string): AstEdge[] {
   const edges: AstEdge[] = [];
 
-  const targetTypes = new Set(["use_declaration", "impl_item"]);
+  const targetTypes = new Set(["use_declaration", "impl_item", "call_expression"]);
   const nodes = walkCollect(tree.rootNode, targetTypes);
 
   for (const node of nodes) {
@@ -469,10 +497,8 @@ function extractRustEdges(tree: Parser.Tree, sourceFile: string): AstEdge[] {
 
       case "impl_item": {
         // impl Serialize for MyStruct  →  implement edge
-        // impl MyStruct                →  no edge (plain impl block)
         const forKw = findChild(node, "for");
         if (forKw) {
-          // trait impl: first type_identifier = trait, last = struct
           const typeIds = findAllChildren(node, "type_identifier");
           if (typeIds.length >= 2) {
             edges.push({
@@ -480,6 +506,42 @@ function extractRustEdges(tree: Parser.Tree, sourceFile: string): AstEdge[] {
               target_file: sourceFile,
               edge_type: "implement",
               symbol_name: typeIds[0].text,
+              language: "rust",
+            });
+          }
+        }
+        break;
+      }
+
+      case "call_expression": {
+        const callee = node.child(0);
+        if (!callee) break;
+
+        // serde_json::from_str(...)  →  scoped_identifier (pkg::fn)
+        if (callee.type === "scoped_identifier") {
+          const pkg = callee.child(0);
+          const fn = callee.child(2);
+          if (pkg && fn) {
+            edges.push({
+              source_file: sourceFile,
+              target_file: sourceFile,
+              edge_type: "call",
+              symbol_name: `${pkg.text}::${fn.text}`,
+              language: "rust",
+            });
+          }
+        }
+
+        // foo.bar()  →  field_expression (receiver.method)
+        if (callee.type === "field_expression") {
+          const receiver = callee.child(0);
+          const method = callee.child(2);
+          if (receiver?.type === "identifier" && method) {
+            edges.push({
+              source_file: sourceFile,
+              target_file: sourceFile,
+              edge_type: "call",
+              symbol_name: `${receiver.text}.${method.text}`,
               language: "rust",
             });
           }
@@ -507,7 +569,7 @@ function collectJavaPath(node: SyntaxNode): string {
 function extractJavaEdges(tree: Parser.Tree, sourceFile: string): AstEdge[] {
   const edges: AstEdge[] = [];
 
-  const targetTypes = new Set(["import_declaration", "class_declaration", "interface_declaration"]);
+  const targetTypes = new Set(["import_declaration", "class_declaration", "interface_declaration", "method_invocation"]);
   const nodes = walkCollect(tree.rootNode, targetTypes);
 
   for (const node of nodes) {
@@ -543,6 +605,23 @@ function extractJavaEdges(tree: Parser.Tree, sourceFile: string): AstEdge[] {
               edges.push({ source_file: sourceFile, target_file: sourceFile, edge_type: "implement", symbol_name: typeId.text, language: "java" });
             }
           }
+        }
+        break;
+      }
+
+      case "method_invocation": {
+        // List.of(...)  /  foo.bar()  →  identifier + "." + identifier + argument_list
+        // child(0) = object (identifier), child(1) = ".", child(2) = method name
+        const obj = node.child(0);
+        const method = node.child(2);
+        if (obj?.type === "identifier" && method) {
+          edges.push({
+            source_file: sourceFile,
+            target_file: sourceFile,
+            edge_type: "call",
+            symbol_name: `${obj.text}.${method.text}`,
+            language: "java",
+          });
         }
         break;
       }

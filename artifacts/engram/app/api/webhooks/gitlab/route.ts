@@ -9,6 +9,9 @@
  *
  * Security: GITLAB_WEBHOOK_TOKEN is REQUIRED in non-development environments.
  * Requests with an invalid or missing token are rejected with 401.
+ *
+ * Removed files: edges and chunk AST metadata for deleted files are removed
+ * synchronously before background re-indexing of changed files begins.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -23,7 +26,6 @@ function verifyGitLabToken(token: string | null): boolean {
       console.warn("[webhook/gitlab] GITLAB_WEBHOOK_TOKEN not set — skipping token check (dev only)");
       return true;
     }
-    // Production/staging: reject unauthenticated requests
     console.error("[webhook/gitlab] GITLAB_WEBHOOK_TOKEN is not configured — rejecting request");
     return false;
   }
@@ -69,23 +71,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, skipped: "no_repo_or_commit" });
   }
 
-  // Extract changed files and capture head commit metadata
+  // Collect added/modified files (re-index) and removed files (delete edges)
   const changedFiles = new Set<string>();
+  const removedFiles = new Set<string>();
   let commitMessage: string | undefined;
   let commitTimestamp: string | undefined;
 
   for (const commit of payload.commits ?? []) {
     if (!commitMessage && commit.message) {
-      // Use the first (most recent) commit's message and timestamp for metadata
       commitMessage = commit.message.split("\n")[0].slice(0, 500);
       commitTimestamp = commit.timestamp;
     }
     for (const f of [...(commit.added ?? []), ...(commit.modified ?? [])]) {
       changedFiles.add(f);
     }
+    for (const f of commit.removed ?? []) {
+      removedFiles.add(f);
+      changedFiles.delete(f); // don't re-index a deleted file
+    }
   }
 
-  if (changedFiles.size === 0) {
+  if (changedFiles.size === 0 && removedFiles.size === 0) {
     return NextResponse.json({ ok: true, skipped: "no_changed_files" });
   }
 
@@ -100,6 +106,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, skipped: "repo_not_indexed" });
   }
 
+  // Synchronously remove stale edges and chunk AST metadata for deleted files
+  if (removedFiles.size > 0) {
+    const removedArr = Array.from(removedFiles);
+    await admin
+      .from("code_ast_edges")
+      .delete()
+      .eq("repo_id", repo.id)
+      .in("source_file", removedArr);
+    await admin
+      .from("github_chunks")
+      .update({ ast_node_type: null, ast_parent: null })
+      .eq("repo_id", repo.id)
+      .in("file_path", removedArr);
+  }
+
+  // Background indexing for changed files (non-blocking — GitLab expects < 10s)
   indexChangedFiles({
     repoId: repo.id,
     teamId: repo.team_id,
@@ -115,6 +137,7 @@ export async function POST(request: NextRequest) {
     ok: true,
     repo: repoFullName,
     commit: commitSha.slice(0, 8),
-    files: changedFiles.size,
+    changed: changedFiles.size,
+    removed: removedFiles.size,
   });
 }

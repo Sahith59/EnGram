@@ -115,18 +115,23 @@ export async function GET(request: NextRequest) {
   }
 
   // ── Strict CSRF state validation ──────────────────────────────────────────
-  // The initiation route always sets a gh_oauth_state cookie. If the cookie is
-  // present, the state param in the callback MUST be present and must match.
-  // If neither is present (e.g., a direct GitHub webhook redirect), allow through.
+  // Our initiation route (/api/oauth/github) always generates a state nonce and
+  // stores it in the gh_oauth_state cookie before redirecting to GitHub.
+  // The callback MUST validate that the cookie and the returned state param
+  // are both present and identical. We reject all other combinations:
+  //
+  //   cookie present + state present + match  → allow
+  //   cookie present + state missing           → reject (CSRF attempt)
+  //   cookie present + state present + mismatch → reject (CSRF attempt)
+  //   cookie missing + state present           → reject (unknown initiation)
+  //   cookie missing + state missing           → reject (no proof of initiation)
+  //
+  // This means EVERY callback that will persist credentials to a user session
+  // must have gone through our initiation route.
   const savedState = request.cookies.get("gh_oauth_state")?.value;
-  if (savedState) {
-    // We initiated this flow: state param is required and must match
-    if (!state || state !== savedState) {
-      return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=invalid_state`);
-    }
+  if (!savedState || !state || state !== savedState) {
+    return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=invalid_state`);
   }
-  // If no cookie and no state: direct redirect from GitHub (GitHub App webhook
-  // flows can omit state). Allow but note the reduced CSRF protection.
 
   if (!installationId) {
     return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=no_installation_id`);
