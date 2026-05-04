@@ -5,12 +5,9 @@
  * GitHub redirects here after the user installs/authorizes the GitHub App,
  * passing installation_id and optionally setup_action + state.
  *
- * Flow:
- *  1. Validate CSRF state cookie (strictly required when state is present)
- *  2. Use App ID + private key to generate an RS256 JWT
- *  3. Exchange JWT + installation_id for a short-lived installation access token
- *  4. Fetch installation metadata (account login, type)
- *  5. Store installation_id + encrypted token in github_oauth_tokens
+ * CSRF protection: when our initiation route sets a state cookie, the
+ * callback MUST present a matching state param. If the cookie is present
+ * but state is absent (or mismatched), the request is rejected.
  *
  * Required env vars:
  *   GITHUB_APP_ID          — numeric GitHub App ID
@@ -117,16 +114,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=github_denied`);
   }
 
-  // Strict CSRF state validation: if either state or cookie is present, both must match.
-  // If state is present in the callback, cookie must also be present and equal.
+  // ── Strict CSRF state validation ──────────────────────────────────────────
+  // The initiation route always sets a gh_oauth_state cookie. If the cookie is
+  // present, the state param in the callback MUST be present and must match.
+  // If neither is present (e.g., a direct GitHub webhook redirect), allow through.
   const savedState = request.cookies.get("gh_oauth_state")?.value;
-  if (state) {
-    // State was sent — cookie must be present and match (strict enforcement)
-    if (!savedState || state !== savedState) {
+  if (savedState) {
+    // We initiated this flow: state param is required and must match
+    if (!state || state !== savedState) {
       return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=invalid_state`);
     }
   }
-  // If no state in callback (some GitHub App flows omit it), allow through
+  // If no cookie and no state: direct redirect from GitHub (GitHub App webhook
+  // flows can omit state). Allow but note the reduced CSRF protection.
 
   if (!installationId) {
     return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=no_installation_id`);
@@ -138,7 +138,8 @@ export async function GET(request: NextRequest) {
     const { data: { user: authUser } } = await supabase.auth.getUser();
     if (authUser) {
       const admin = createAdminClient();
-      const { data: profile } = await supabase.from("profiles").select("team_id").eq("id", authUser.id).single();
+      const { data: profile } = await supabase
+        .from("profiles").select("team_id").eq("id", authUser.id).single();
       if (profile?.team_id) {
         await admin.from("github_oauth_tokens")
           .delete()
@@ -157,13 +158,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=not_configured`);
   }
 
-  // Exchange installation_id for an access token
+  // Exchange installation_id for an installation access token
   const tokenResult = await getInstallationAccessToken(appId, privateKey, installationId);
   if (!tokenResult) {
     return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=token_exchange`);
   }
 
-  // Fetch installation metadata
+  // Fetch installation metadata (account login)
   const jwt = generateGitHubAppJwt(appId, privateKey);
   const meta = await getInstallationMetadata(jwt, installationId);
 

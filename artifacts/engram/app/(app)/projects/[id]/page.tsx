@@ -1095,6 +1095,18 @@ function MembersTab({ projectId, members, isOwner, onRefresh, repo }: {
   const [inviteLoading, setInviteLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  async function disconnectRepo() {
+    if (!confirm("Disconnect this repository? The project will lose access to code search and AST analysis until a new repo is linked.")) return;
+    setDisconnecting(true);
+    try {
+      const r = await fetch(`/api/projects/${projectId}/repo`, { method: "DELETE" });
+      if (r.ok) onRefresh();
+    } finally {
+      setDisconnecting(false);
+    }
+  }
 
   async function generateInvite() {
     setInviteLoading(true);
@@ -1139,32 +1151,37 @@ function MembersTab({ projectId, members, isOwner, onRefresh, repo }: {
         </div>
         {repo ? (
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
+            {/* ── Repo identity + status ── */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
                 <a
                   href={`https://github.com/${repo.repo_full_name}`}
                   target="_blank"
-                  rel="noopener"
-                  className="flex items-center gap-1.5 text-sm text-gh-text hover:text-engram-light transition-colors font-medium"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-sm text-gh-text hover:text-engram-light transition-colors font-medium"
                 >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                  {repo.repo_full_name}
+                  <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{repo.repo_full_name}</span>
                 </a>
-                <div className="flex items-center gap-3 mt-1 text-xs text-gh-muted">
+                <div className="flex flex-wrap items-center gap-3 mt-1 text-xs text-gh-muted">
                   <span className="flex items-center gap-1">
                     <GitBranch className="h-3 w-3" />{repo.default_branch ?? "main"}
                   </span>
                   <span className="flex items-center gap-1">
                     <BookOpen className="h-3 w-3" />{repo.file_count.toLocaleString()} files
                   </span>
-                  {repo.is_private && (
+                  {repo.is_private ? (
                     <span className="flex items-center gap-1"><Lock className="h-3 w-3" />Private</span>
+                  ) : (
+                    <span className="flex items-center gap-1"><Globe className="h-3 w-3" />Public</span>
                   )}
                 </div>
               </div>
-              <div className="text-right">
+
+              {/* Indexing status badge */}
+              <div className="text-right shrink-0">
                 {repo.last_indexed_commit ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-green-500/10 border border-green-500/20 text-green-400 text-xs">
+                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-green-500/10 border border-green-500/20 text-green-400 text-xs font-mono">
                     <GitCommit className="h-3 w-3" />
                     AST @ {repo.last_indexed_commit.slice(0, 7)}
                   </span>
@@ -1176,20 +1193,45 @@ function MembersTab({ projectId, members, isOwner, onRefresh, repo }: {
                 )}
                 {repo.indexed_at && (
                   <div className="text-[10px] text-gh-muted mt-1">
-                    Indexed {new Date(repo.indexed_at).toLocaleDateString()}
+                    Last indexed {new Date(repo.indexed_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
                   </div>
                 )}
               </div>
             </div>
+
+            {/* ── First-index notice ── */}
             {!repo.last_indexed_commit && (
               <div className="text-xs text-gh-muted bg-gh-bg border border-gh-border rounded-md px-3 py-2">
-                AST indexing starts automatically on the next push event. Connect a webhook in your GitHub App settings to enable this.
+                AST indexing starts automatically on the next push to <span className="font-mono">{repo.default_branch ?? "main"}</span>. Ensure a webhook is configured in your GitHub App installation.
+              </div>
+            )}
+
+            {/* ── Owner controls ── */}
+            {isOwner && (
+              <div className="flex justify-end pt-1 border-t border-gh-border/50">
+                <button
+                  onClick={disconnectRepo}
+                  disabled={disconnecting}
+                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-red-500/20 text-red-400 hover:bg-red-500/10 hover:border-red-500/40 transition-colors disabled:opacity-50">
+                  {disconnecting ? <Loader2 className="h-3 w-3 animate-spin" /> : <XCircle className="h-3 w-3" />}
+                  Disconnect repository
+                </button>
               </div>
             )}
           </div>
         ) : (
-          <div className="text-xs text-gh-muted">
-            No code repository linked to this project yet. Add a GitHub repository in the project settings to enable codebase search and AST analysis.
+          <div className="space-y-3">
+            <p className="text-xs text-gh-muted">
+              No code repository linked to this project yet. Connect a GitHub repository to enable codebase search and AST dependency analysis.
+            </p>
+            {isOwner && (
+              <a
+                href={`/settings?tab=integrations`}
+                className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-gh-border bg-gh-bg text-gh-text hover:border-engram-light/40 hover:text-engram-light transition-colors">
+                <Github className="h-3.5 w-3.5" />
+                Connect via GitHub App
+              </a>
+            )}
           </div>
         )}
       </div>
