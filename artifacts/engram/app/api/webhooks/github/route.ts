@@ -7,6 +7,10 @@
  *   Content type: application/json
  *   Secret: value of GITHUB_WEBHOOK_SECRET env var
  *   Events: Just the push event
+ *
+ * Security: signature verification is REQUIRED in production.
+ * GITHUB_WEBHOOK_SECRET must be set; requests without a valid
+ * X-Hub-Signature-256 header are rejected with 401.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -16,11 +20,28 @@ import { createHmac, timingSafeEqual } from "crypto";
 
 function verifyGitHubSignature(body: string, signature: string | null): boolean {
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
-  if (!secret) return true; // skip verification if no secret configured (dev mode)
+
+  // In development without a configured secret, allow but log a warning.
+  // In all other environments the secret is mandatory.
+  if (!secret) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[webhook/github] GITHUB_WEBHOOK_SECRET not set — skipping signature check (dev only)");
+      return true;
+    }
+    // Production/staging: reject unsigned requests
+    console.error("[webhook/github] GITHUB_WEBHOOK_SECRET is not configured — rejecting request");
+    return false;
+  }
+
   if (!signature) return false;
+
   const expected = "sha256=" + createHmac("sha256", secret).update(body).digest("hex");
   try {
-    return timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+    // Constant-time comparison to prevent timing attacks
+    const sigBuf = Buffer.from(signature.padEnd(expected.length));
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length) return false;
+    return timingSafeEqual(sigBuf, expBuf);
   } catch {
     return false;
   }
@@ -31,7 +52,7 @@ export async function POST(request: NextRequest) {
   const signature = request.headers.get("x-hub-signature-256");
 
   if (!verifyGitHubSignature(rawBody, signature)) {
-    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+    return NextResponse.json({ error: "Invalid or missing signature" }, { status: 401 });
   }
 
   const event = request.headers.get("x-github-event");

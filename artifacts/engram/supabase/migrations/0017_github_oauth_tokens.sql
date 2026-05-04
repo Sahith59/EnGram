@@ -7,9 +7,12 @@ create table if not exists public.github_oauth_tokens (
   id                uuid primary key default uuid_generate_v4(),
   team_id           uuid not null references public.teams(id) on delete cascade,
   provider          text not null check (provider in ('github', 'gitlab')),
-  access_token_enc  text not null,
+  -- GitHub App installation metadata
+  installation_id   text,       -- GitHub App installation ID (numeric, stored as text)
+  -- Encrypted short-lived access token (installation token or OAuth user token)
+  access_token_enc  text not null default '',
   token_scope       text,
-  provider_login    text,       -- GitHub login / GitLab username
+  provider_login    text,       -- GitHub org/user login or GitLab username
   expires_at        timestamptz,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),

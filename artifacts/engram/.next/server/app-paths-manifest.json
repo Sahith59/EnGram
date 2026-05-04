@@ -1,5 +1,11 @@
 {
-  "/page": "app/page.js",
   "/api/capture/route": "app/api/capture/route.js",
+  "/api/contexts/route": "app/api/contexts/route.js",
+  "/api/teams/route": "app/api/teams/route.js",
+  "/api/resume/route": "app/api/resume/route.js",
+  "/api/admin/backfill-embeddings/route": "app/api/admin/backfill-embeddings/route.js",
+  "/api/me/route": "app/api/me/route.js",
+  "/api/contexts/[id]/export/route": "app/api/contexts/[id]/export/route.js",
+  "/(auth)/login/page": "app/(auth)/login/page.js",
   "/(app)/dashboard/page": "app/(app)/dashboard/page.js"
 }

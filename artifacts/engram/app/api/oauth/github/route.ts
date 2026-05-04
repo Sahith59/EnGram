@@ -1,23 +1,28 @@
 /**
  * GET /api/oauth/github
- * Initiates the GitHub OAuth flow.
- * Redirects to GitHub's authorization page.
+ * Initiates the GitHub App installation flow.
+ *
+ * Redirects the user to the GitHub App's installation page. After the user
+ * installs/authorizes the app on their org or repos, GitHub redirects back
+ * to /api/oauth/github/callback with an installation_id parameter.
  *
  * Required env vars:
- *   GITHUB_CLIENT_ID — GitHub OAuth App client ID
+ *   GITHUB_APP_NAME  — the slug of the GitHub App (e.g. "engram-code-sync")
+ *   GITHUB_APP_ID    — numeric GitHub App ID
+ *   GITHUB_APP_PRIVATE_KEY — RSA private key PEM (for installation token generation)
  */
 
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { randomBytes } from "crypto";
 
-const GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize";
+const GH_APP_INSTALL_BASE = "https://github.com/apps";
 
 export async function GET() {
-  const clientId = process.env.GITHUB_CLIENT_ID;
-  if (!clientId) {
+  const appName = process.env.GITHUB_APP_NAME;
+  if (!appName) {
     return NextResponse.json(
-      { error: "GitHub OAuth not configured. Set GITHUB_CLIENT_ID." },
+      { error: "GitHub App not configured. Set GITHUB_APP_NAME." },
       { status: 503 }
     );
   }
@@ -29,14 +34,11 @@ export async function GET() {
   // CSRF state token stored in a short-lived cookie
   const state = randomBytes(16).toString("hex");
 
-  const params = new URLSearchParams({
-    client_id: clientId,
-    scope: "repo,read:user",
-    state,
-    redirect_uri: `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/api/oauth/github/callback`,
-  });
+  // Redirect to GitHub App installation page
+  // After installation, GitHub redirects to the app's setup_url with installation_id + state
+  const installUrl = `${GH_APP_INSTALL_BASE}/${encodeURIComponent(appName)}/installations/new?state=${state}`;
 
-  const response = NextResponse.redirect(`${GITHUB_AUTHORIZE}?${params}`);
+  const response = NextResponse.redirect(installUrl);
   response.cookies.set("gh_oauth_state", state, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",

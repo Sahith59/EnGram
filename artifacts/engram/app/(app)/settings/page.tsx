@@ -448,17 +448,21 @@ function IntegrationsTab() {
       <div className="rounded-xl border border-gh-border bg-gh-canvas p-5">
         <h3 className="text-sm font-semibold text-gh-text mb-1 flex items-center gap-2">
           <ExternalLink className="h-4 w-4 text-engram-light" />
-          Setting up OAuth Apps
+          Setting up GitHub App &amp; GitLab OAuth
         </h3>
         <div className="space-y-2 text-xs text-gh-muted leading-relaxed">
           <p>
-            <strong className="text-gh-text">GitHub:</strong> Go to{" "}
-            <a href="https://github.com/settings/developers" target="_blank" rel="noopener"
+            <strong className="text-gh-text">GitHub App:</strong> Go to{" "}
+            <a href="https://github.com/settings/apps/new" target="_blank" rel="noopener"
               className="text-engram-light hover:underline">GitHub Developer Settings</a>{" "}
-            → OAuth Apps → New. Set callback URL to{" "}
+            → GitHub Apps → New. Set the setup URL / callback URL to{" "}
             <code className="bg-gh-bg border border-gh-border rounded px-1">{appUrl}/api/oauth/github/callback</code>.
-            Then set <code className="bg-gh-bg border border-gh-border rounded px-1">GITHUB_CLIENT_ID</code> and{" "}
-            <code className="bg-gh-bg border border-gh-border rounded px-1">GITHUB_CLIENT_SECRET</code> in your environment.
+            {" "}Generate a private key and set{" "}
+            <code className="bg-gh-bg border border-gh-border rounded px-1">GITHUB_APP_ID</code>,{" "}
+            <code className="bg-gh-bg border border-gh-border rounded px-1">GITHUB_APP_NAME</code>, and{" "}
+            <code className="bg-gh-bg border border-gh-border rounded px-1">GITHUB_APP_PRIVATE_KEY</code> in your environment.
+            Set <code className="bg-gh-bg border border-gh-border rounded px-1">GITHUB_WEBHOOK_SECRET</code> for
+            {" "}webhook signature verification (required in production).
           </p>
           <p>
             <strong className="text-gh-text">GitLab:</strong> Go to{" "}
@@ -466,13 +470,9 @@ function IntegrationsTab() {
               className="text-engram-light hover:underline">GitLab Applications</a>{" "}
             → Add new application. Callback URL:{" "}
             <code className="bg-gh-bg border border-gh-border rounded px-1">{appUrl}/api/oauth/gitlab/callback</code>.
-            Set <code className="bg-gh-bg border border-gh-border rounded px-1">GITLAB_CLIENT_ID</code> and{" "}
-            <code className="bg-gh-bg border border-gh-border rounded px-1">GITLAB_CLIENT_SECRET</code>.
-          </p>
-          <p>
-            <strong className="text-gh-text">Webhook security:</strong> Optionally set{" "}
-            <code className="bg-gh-bg border border-gh-border rounded px-1">GITHUB_WEBHOOK_SECRET</code> and{" "}
-            <code className="bg-gh-bg border border-gh-border rounded px-1">GITLAB_WEBHOOK_TOKEN</code> to verify webhook signatures.
+            Set <code className="bg-gh-bg border border-gh-border rounded px-1">GITLAB_CLIENT_ID</code>,{" "}
+            <code className="bg-gh-bg border border-gh-border rounded px-1">GITLAB_CLIENT_SECRET</code>, and{" "}
+            <code className="bg-gh-bg border border-gh-border rounded px-1">GITLAB_WEBHOOK_TOKEN</code>.
           </p>
         </div>
       </div>
