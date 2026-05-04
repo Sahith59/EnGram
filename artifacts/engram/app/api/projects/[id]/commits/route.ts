@@ -104,18 +104,21 @@ interface RawCommit {
   files_changed: number;
 }
 
-async function fetchGitHubCommits(repoFullName: string, branch: string, token: string): Promise<RawCommit[]> {
+async function fetchGitHubCommits(repoFullName: string, branch: string, token: string | null): Promise<RawCommit[]> {
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
   const res = await fetch(
     `${GH_API}/repos/${repoFullName}/commits?sha=${branch}&per_page=30`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-    }
+    { headers }
   );
-  if (!res.ok) return [];
+  if (!res.ok) {
+    console.warn(`[commits] GitHub API ${res.status} for ${repoFullName}`);
+    return [];
+  }
   const data = await res.json() as Array<{
     sha: string;
     commit: { message: string; author?: { name?: string; date?: string } };
@@ -190,7 +193,7 @@ export async function GET(
 
   const { data: repo } = await admin
     .from("github_repos")
-    .select("id, repo_full_name, default_branch, provider")
+    .select("id, repo_full_name, default_branch, provider, is_private")
     .eq("id", project.github_repo_id)
     .single();
   if (!repo) return NextResponse.json({ commits: [] });
@@ -198,15 +201,21 @@ export async function GET(
   const branch = repo.default_branch ?? "main";
   const provider = (repo.provider ?? "github") as "github" | "gitlab";
 
-  // Fetch commits from provider
+  // Fetch commits from provider.
+  // For public repos, GitHub allows unauthenticated requests (60 req/hr limit).
+  // We always attempt the fetch; token improves rate limits and enables private repos.
   let rawCommits: RawCommit[] = [];
+  let hasToken = false;
   try {
     if (provider === "gitlab") {
       const token = await getGitLabToken(admin, profile.team_id);
+      hasToken = !!token;
       if (token) rawCommits = await fetchGitLabCommits(repo.repo_full_name, branch, token);
     } else {
       const token = await getGitHubToken(admin, profile.team_id);
-      if (token) rawCommits = await fetchGitHubCommits(repo.repo_full_name, branch, token);
+      hasToken = !!token;
+      // Pass token (may be null) — fetchGitHubCommits handles unauthenticated calls for public repos
+      rawCommits = await fetchGitHubCommits(repo.repo_full_name, branch, token);
     }
   } catch (err) {
     console.warn("[commits] provider fetch error:", err);
@@ -214,8 +223,8 @@ export async function GET(
 
   if (rawCommits.length === 0) {
     return NextResponse.json(
-      { commits: [] },
-      { headers: { "Cache-Control": "private, max-age=300" } }
+      { commits: [], repo_full_name: repo.repo_full_name, provider, has_token: hasToken, is_private: repo.is_private ?? false },
+      { headers: { "Cache-Control": "no-store" } }
     );
   }
 
@@ -254,7 +263,7 @@ export async function GET(
   }));
 
   return NextResponse.json(
-    { commits, repo_full_name: repo.repo_full_name, provider },
-    { headers: { "Cache-Control": "private, max-age=300" } }
+    { commits, repo_full_name: repo.repo_full_name, provider, has_token: hasToken, is_private: repo.is_private ?? false },
+    { headers: { "Cache-Control": "private, max-age=60" } }
   );
 }

@@ -80,14 +80,13 @@ export interface DiffFile {
   patch:     string | null;
 }
 
-async function fetchGitHubDiff(repoFullName: string, sha: string, token: string): Promise<DiffFile[]> {
-  const res = await fetch(`${GH_API}/repos/${repoFullName}/commits/${sha}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-  });
+async function fetchGitHubDiff(repoFullName: string, sha: string, token: string | null): Promise<DiffFile[]> {
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${GH_API}/repos/${repoFullName}/commits/${sha}`, { headers });
   if (!res.ok) return [];
   const data = await res.json() as {
     files?: Array<{
@@ -170,7 +169,8 @@ export async function GET(
       if (token) files = await fetchGitLabDiff(repo.repo_full_name, params.sha, token);
     } else {
       const token = await getGitHubToken(admin, profile.team_id);
-      if (token) files = await fetchGitHubDiff(repo.repo_full_name, params.sha, token);
+      // null token = unauthenticated — works for public repos (60 req/hr rate limit)
+      files = await fetchGitHubDiff(repo.repo_full_name, params.sha, token);
     }
   } catch (err) {
     console.warn("[diff] fetch error:", err);

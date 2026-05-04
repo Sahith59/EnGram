@@ -604,6 +604,8 @@ function CommitsTab({ projectId, snapshots, focusedCommitSha, onFocusHandled }: 
   const [diffMap, setDiffMap] = useState<Record<string, DiffFile[]>>({});
   const [diffLoading, setDiffLoading] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState<Record<string, boolean>>({});
+  const [hasToken, setHasToken] = useState(true);
+  const [isPrivateRepo, setIsPrivateRepo] = useState(false);
 
   async function loadCommits() {
     setLoading(true);
@@ -614,6 +616,8 @@ function CommitsTab({ projectId, snapshots, focusedCommitSha, onFocusHandled }: 
         setCommits(d.commits ?? []);
         setRepoFullName(d.repo_full_name ?? "");
         setProvider(d.provider ?? "github");
+        setHasToken(d.has_token ?? false);
+        setIsPrivateRepo(d.is_private ?? false);
       }
     } finally { setLoading(false); }
   }
@@ -696,13 +700,30 @@ function CommitsTab({ projectId, snapshots, focusedCommitSha, onFocusHandled }: 
   }
 
   if (commits.length === 0) {
+    const isPrivateNoToken = isPrivateRepo && !hasToken;
     return (
       <div className="text-center py-20">
         <GitCommit className="h-12 w-12 text-gh-muted/30 mx-auto mb-4" />
-        <h3 className="text-lg font-medium text-gh-text mb-2">No commits yet</h3>
+        <h3 className="text-lg font-medium text-gh-text mb-2">
+          {isPrivateNoToken ? "GitHub token required" : "No commits found"}
+        </h3>
         <p className="text-sm text-gh-muted max-w-sm mx-auto">
-          Push a commit to the connected repository. Semantic links are created automatically after each push.
+          {isPrivateNoToken
+            ? "This is a private repository. Connect your GitHub account in Settings to load commit history."
+            : repoFullName
+              ? `No commits were returned from ${repoFullName}. The repository may be empty or the branch may have no history.`
+              : "No repository is linked to this project yet."}
         </p>
+        {repoFullName && !isPrivateNoToken && (
+          <a
+            href={`https://github.com/${repoFullName}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-4 inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300"
+          >
+            Open on GitHub <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
       </div>
     );
   }
@@ -713,6 +734,12 @@ function CommitsTab({ projectId, snapshots, focusedCommitSha, onFocusHandled }: 
 
   return (
     <div className="max-w-4xl">
+      {!hasToken && !isPrivateRepo && (
+        <div className="mb-4 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-xs text-yellow-400 flex items-center gap-2">
+          <svg className="h-3.5 w-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20A10 10 0 0012 2z" /></svg>
+          Showing commits via public GitHub API (unauthenticated). Connect GitHub in Settings for private repos and higher rate limits.
+        </div>
+      )}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xs font-mono uppercase tracking-wider text-gh-muted flex items-center gap-2">
           <GitCommit className="h-3.5 w-3.5" />

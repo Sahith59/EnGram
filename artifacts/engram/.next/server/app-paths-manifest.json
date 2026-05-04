@@ -1,6 +1,7 @@
 {
   "/api/capture/route": "app/api/capture/route.js",
   "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
+  "/(app)/projects/page": "app/(app)/projects/page.js",
   "/(app)/projects/[id]/page": "app/(app)/projects/[id]/page.js",
-  "/(app)/projects/page": "app/(app)/projects/page.js"
+  "/(app)/settings/page": "app/(app)/settings/page.js"
 }
