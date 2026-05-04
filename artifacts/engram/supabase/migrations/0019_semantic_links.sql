@@ -58,8 +58,9 @@ create policy "team members can delete semantic links"
     )
   );
 
--- Vector search for context snapshots within a time window
--- Used by commit-linker to find conversations near a commit's timestamp
+-- Vector search for context snapshots within a pre-commit time window.
+-- window_end must equal the commit timestamp so only conversations captured
+-- BEFORE the commit are returned (forward-only / causal linking).
 create or replace function public.search_snapshots_near_commit(
   query_embedding  vector(1536),
   team_id_filter   uuid,

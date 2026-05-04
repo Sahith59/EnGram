@@ -154,6 +154,7 @@ export default function ProjectWorkspacePage() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
+  const [focusedCommitSha, setFocusedCommitSha] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -322,7 +323,7 @@ export default function ProjectWorkspacePage() {
         <AnimatePresence mode="wait">
           {activeTab === "feed" && (
             <motion.div key="feed" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-              <FeedTab snapshots={snapshots} projectName={project.name} projectId={projectId} onGoToCommit={(sha) => switchTab("commits")} />
+              <FeedTab snapshots={snapshots} projectName={project.name} projectId={projectId} onGoToCommit={(sha) => { setFocusedCommitSha(sha); switchTab("commits"); }} />
             </motion.div>
           )}
           {activeTab === "ask" && (
@@ -340,7 +341,8 @@ export default function ProjectWorkspacePage() {
               <CommitsTab
                 projectId={projectId}
                 snapshots={snapshots}
-                onNavigateToCommit={(sha) => { switchTab("commits"); }}
+                focusedCommitSha={focusedCommitSha}
+                onFocusHandled={() => setFocusedCommitSha(null)}
               />
             </motion.div>
           )}
@@ -550,6 +552,7 @@ interface CommitRow {
   message: string;
   author: string;
   timestamp: string;
+  files_changed: number;
   linked_conversations: number;
   linked_snapshot_ids: string[];
   top_similarity: number;
@@ -568,10 +571,11 @@ interface IntentResult {
   }>;
 }
 
-function CommitsTab({ projectId, snapshots }: {
+function CommitsTab({ projectId, snapshots, focusedCommitSha, onFocusHandled }: {
   projectId: string;
   snapshots: Snapshot[];
-  onNavigateToCommit?: (sha: string) => void;
+  focusedCommitSha?: string | null;
+  onFocusHandled?: () => void;
 }) {
   const [commits, setCommits] = useState<CommitRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -581,6 +585,7 @@ function CommitsTab({ projectId, snapshots }: {
   const [linkModalCommit, setLinkModalCommit] = useState<CommitRow | null>(null);
   const [repoFullName, setRepoFullName] = useState<string>("");
   const [provider, setProvider] = useState<"github" | "gitlab">("github");
+  const commitRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   async function loadCommits() {
     setLoading(true);
@@ -596,6 +601,23 @@ function CommitsTab({ projectId, snapshots }: {
   }
 
   useEffect(() => { loadCommits(); }, [projectId]);
+
+  // Auto-expand and scroll to focused commit (from feed badge click)
+  useEffect(() => {
+    if (!focusedCommitSha || loading) return;
+    // Find matching commit (full SHA or short SHA)
+    const match = commits.find(
+      (c) => c.sha === focusedCommitSha || c.sha.startsWith(focusedCommitSha) || c.sha_short === focusedCommitSha
+    );
+    if (!match) return;
+    setExpandedSha(match.sha);
+    loadIntent(match.sha);
+    setTimeout(() => {
+      commitRefs.current[match.sha]?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 100);
+    onFocusHandled?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedCommitSha, loading, commits]);
 
   async function loadIntent(sha: string) {
     if (intentMap[sha]) return;
@@ -620,7 +642,6 @@ function CommitsTab({ projectId, snapshots }: {
 
   async function unlinkSnapshot(sha: string, snapshotId: string) {
     await fetch(`/api/projects/${projectId}/commits/${sha}/links?snapshot_id=${snapshotId}`, { method: "DELETE" });
-    // Refresh intent data for this commit
     setIntentMap((prev) => {
       const updated = { ...prev };
       delete updated[sha];
@@ -671,9 +692,18 @@ function CommitsTab({ projectId, snapshots }: {
           const isExpanded = expandedSha === commit.sha;
           const intent = intentMap[commit.sha];
           const isLoadingIntent = intentLoading === commit.sha;
+          const isFocused = !!(focusedCommitSha && (
+            commit.sha === focusedCommitSha || commit.sha.startsWith(focusedCommitSha)
+          ));
 
           return (
-            <div key={commit.sha} className="rounded-lg border border-gh-border bg-gh-canvas overflow-hidden">
+            <div
+              key={commit.sha}
+              ref={(el) => { commitRefs.current[commit.sha] = el; }}
+              className={cn(
+                "rounded-lg border bg-gh-canvas overflow-hidden transition-shadow",
+                isFocused ? "border-engram/50 ring-1 ring-engram/30" : "border-gh-border"
+              )}>
               {/* ── Commit row ── */}
               <div
                 className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gh-bg transition-colors"
@@ -688,6 +718,9 @@ function CommitsTab({ projectId, snapshots }: {
                     <span>{commit.author}</span>
                     {commit.timestamp && (
                       <span>{new Date(commit.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</span>
+                    )}
+                    {commit.files_changed > 0 && (
+                      <span>{commit.files_changed} file{commit.files_changed !== 1 ? "s" : ""}</span>
                     )}
                   </div>
                 </div>

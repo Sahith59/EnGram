@@ -219,20 +219,28 @@ export async function GET(
     );
   }
 
-  // Load semantic_links counts for all these SHAs
+  // Load semantic_links for all SHAs — include linked_files for files_changed count
   const shas = rawCommits.map((c) => c.sha);
   const { data: links } = await admin
     .from("semantic_links")
-    .select("commit_sha, snapshot_id, similarity, is_manual")
+    .select("commit_sha, snapshot_id, similarity, linked_files")
     .eq("repo_id", repo.id)
     .in("commit_sha", shas);
 
-  const linkMap = new Map<string, { count: number; snapshot_ids: string[]; top_similarity: number }>();
+  const linkMap = new Map<string, {
+    count: number; snapshot_ids: string[]; top_similarity: number; files_changed: number;
+  }>();
   for (const link of (links ?? [])) {
-    const existing = linkMap.get(link.commit_sha) ?? { count: 0, snapshot_ids: [], top_similarity: 0 };
+    const existing = linkMap.get(link.commit_sha) ?? {
+      count: 0, snapshot_ids: [], top_similarity: 0, files_changed: 0,
+    };
     existing.count++;
     existing.snapshot_ids.push(link.snapshot_id);
     existing.top_similarity = Math.max(existing.top_similarity, link.similarity ?? 0);
+    // Use linked_files.length from first link as the files-changed count
+    if (existing.files_changed === 0 && Array.isArray(link.linked_files)) {
+      existing.files_changed = link.linked_files.length;
+    }
     linkMap.set(link.commit_sha, existing);
   }
 
@@ -242,6 +250,7 @@ export async function GET(
     linked_conversations: linkMap.get(c.sha)?.count ?? 0,
     linked_snapshot_ids: linkMap.get(c.sha)?.snapshot_ids ?? [],
     top_similarity: linkMap.get(c.sha)?.top_similarity ?? 0,
+    files_changed: linkMap.get(c.sha)?.files_changed ?? c.files_changed,
   }));
 
   return NextResponse.json(
