@@ -1,3 +1,6 @@
 {
-  "/api/capture/route": "app/api/capture/route.js"
+  "/api/capture/route": "app/api/capture/route.js",
+  "/api/me/route": "app/api/me/route.js",
+  "/(app)/digest/page": "app/(app)/digest/page.js",
+  "/(app)/projects/[id]/page": "app/(app)/projects/[id]/page.js"
 }
