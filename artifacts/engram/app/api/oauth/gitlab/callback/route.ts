@@ -46,14 +46,14 @@ export async function GET(request: NextRequest) {
   try {
     const res = await fetch(TOKEN_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+      body: new URLSearchParams({
         client_id: clientId,
         client_secret: clientSecret,
         code,
         grant_type: "authorization_code",
         redirect_uri: `${appUrl}/api/oauth/gitlab/callback`,
-      }),
+      }).toString(),
     });
     const data = await res.json() as { access_token?: string; scope?: string; error?: string };
     if (!data.access_token) throw new Error(data.error ?? "No access_token");

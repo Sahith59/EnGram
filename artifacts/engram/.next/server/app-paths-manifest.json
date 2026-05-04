@@ -1,5 +1,4 @@
 {
-  "/api/capture/route": "app/api/capture/route.js",
-  "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
-  "/(app)/projects/[id]/page": "app/(app)/projects/[id]/page.js"
+  "/page": "app/page.js",
+  "/api/capture/route": "app/api/capture/route.js"
 }

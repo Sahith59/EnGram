@@ -89,15 +89,20 @@ export async function POST(request: NextRequest) {
     : payload.commits?.[0]?.message?.split("\n")[0].slice(0, 500);
   const commitTimestamp = payload.head_commit?.timestamp ?? payload.commits?.[0]?.timestamp;
 
-  // Collect all changed files from all commits in the push
+  // Collect added/modified files (will be re-indexed) and removed files (edges/chunks deleted)
   const changedFiles = new Set<string>();
+  const removedFiles = new Set<string>();
   for (const commit of payload.commits ?? []) {
     for (const f of [...(commit.added ?? []), ...(commit.modified ?? [])]) {
       changedFiles.add(f);
     }
+    for (const f of commit.removed ?? []) {
+      removedFiles.add(f);
+      changedFiles.delete(f); // don't re-index a file that was deleted
+    }
   }
 
-  if (changedFiles.size === 0) {
+  if (changedFiles.size === 0 && removedFiles.size === 0) {
     return NextResponse.json({ ok: true, skipped: "no_changed_files" });
   }
 
@@ -110,6 +115,21 @@ export async function POST(request: NextRequest) {
 
   if (!repo) {
     return NextResponse.json({ ok: true, skipped: "repo_not_indexed" });
+  }
+
+  // Delete edges and chunk AST metadata for removed files immediately (synchronous cleanup)
+  if (removedFiles.size > 0) {
+    const removedArr = Array.from(removedFiles);
+    await admin
+      .from("code_ast_edges")
+      .delete()
+      .eq("repo_id", repo.id)
+      .in("source_file", removedArr);
+    await admin
+      .from("github_chunks")
+      .update({ ast_node_type: null, ast_parent: null })
+      .eq("repo_id", repo.id)
+      .in("file_path", removedArr);
   }
 
   // Run indexing in background (non-blocking — webhook must respond in < 10s)

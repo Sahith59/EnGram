@@ -195,7 +195,7 @@ async function updateChunkAstInfo(
   filePath: string,
   fileContent: string
 ): Promise<void> {
-  const { topLevelClasses, nodeType } = analyzeFileStructure(fileContent, filePath);
+  const { topLevelClasses, nodeType } = await analyzeFileStructure(fileContent, filePath);
 
   // Fetch chunks for this file so we can update them individually
   const { data: chunks } = await admin
@@ -211,7 +211,7 @@ async function updateChunkAstInfo(
     const chunkId: string = (chunk as { id: string; content: string }).id;
 
     // Determine chunk's node type from its own content
-    const { nodeType: chunkNodeType } = analyzeFileStructure(chunkContent, filePath);
+    const { nodeType: chunkNodeType } = await analyzeFileStructure(chunkContent, filePath);
 
     // Determine ast_parent:
     // If the chunk looks like a class member (method body, indented pattern)
@@ -284,7 +284,7 @@ export async function indexChangedFiles(event: RepoIndexEvent): Promise<{
       if (!content) continue;
 
       // Parse AST edges (imports + calls + inheritance)
-      const edges = parseAstEdges(filePath, content);
+      const edges = await parseAstEdges(filePath, content);
 
       // Atomic incremental re-index: delete old → insert new
       await admin

@@ -1,19 +1,24 @@
 /**
- * ast-parser.ts — Proper AST dependency edge extractor.
+ * ast-parser.ts — Structural dependency edge extractor using tree-sitter WASM grammars.
  *
- * TypeScript/JavaScript: uses @babel/parser + @babel/traverse for full AST
- * parsing — a production-quality parser (used by Babel, Jest, TypeScript
- * tooling) that generates a real syntax tree, enabling extraction of:
- *   - import / require / dynamic import (import edges)
- *   - class extends / TS implements (inherit / implement edges)
- *   - CallExpression where callee is an imported symbol (call edges)
+ * Uses `web-tree-sitter` (WebAssembly build — no native compilation required) with
+ * pre-built grammar WASM files from `tree-sitter-wasms` for all 6 supported languages:
+ *   TypeScript, JavaScript, Python, Go, Rust, Java.
  *
- * Python/Go/Rust/Java: uses structured regex (tree-sitter native bindings
- * are unavailable in this build environment due to missing Python build
- * toolchain; nix Python 3.9.6 segfaults on version check).
+ * Extracts four edge types from real AST nodes (not regex):
+ *   import   — module/package imports and requires
+ *   call     — call sites where the callee is an imported symbol
+ *   inherit  — class extends / impl for
+ *   implement — class implements (TypeScript, Java, Rust traits)
  *
- * All traverse callbacks use narrowed, typed interfaces — no `any`.
+ * Initialization: Parser.init() is called once (lazy, cached). Language WASM
+ * files are loaded from the tree-sitter-wasms package on first use per language.
  */
+
+import Parser from "web-tree-sitter";
+import type { SyntaxNode } from "web-tree-sitter";
+import { readFileSync } from "fs";
+import { resolve as pathResolve } from "path";
 
 export type AstEdgeType = "import" | "inherit" | "implement" | "call";
 
@@ -25,62 +30,7 @@ export interface AstEdge {
   language: string;
 }
 
-// ── Babel AST node interfaces (subset used in traversal) ─────────────────────
-
-interface BabelImportSpecifier {
-  type: "ImportSpecifier" | "ImportDefaultSpecifier" | "ImportNamespaceSpecifier";
-  local: { name: string };
-}
-
-interface BabelImportDeclaration {
-  type: "ImportDeclaration";
-  source: { value: string };
-  specifiers: BabelImportSpecifier[];
-}
-
-interface BabelStringLiteral {
-  type: "StringLiteral";
-  value: string;
-}
-
-interface BabelIdentifier {
-  type: "Identifier";
-  name: string;
-}
-
-interface BabelMemberExpression {
-  type: "MemberExpression";
-  object: { type: string; name?: string };
-  property: { type: string; name?: string };
-}
-
-type BabelCalleeNode =
-  | { type: "Import" }
-  | BabelIdentifier
-  | BabelMemberExpression
-  | { type: string };
-
-interface BabelCallExpression {
-  type: "CallExpression";
-  callee: BabelCalleeNode;
-  arguments: Array<{ type: string; value?: string }>;
-}
-
-interface BabelClassNode {
-  type: "ClassDeclaration" | "ClassExpression";
-  id: { name: string } | null;
-  superClass: { type: string; name?: string } | null;
-  implements?: Array<{
-    expression?: { name?: string };
-    id?: { name?: string };
-  }>;
-}
-
-interface BabelNodePath<T> {
-  node: T;
-}
-
-// ── Language detection ────────────────────────────────────────────────────────
+// ── Extension → language map ──────────────────────────────────────────────────
 
 const EXT_LANG: Record<string, string> = {
   ts: "typescript", tsx: "typescript",
@@ -91,12 +41,55 @@ const EXT_LANG: Record<string, string> = {
   java: "java",
 };
 
-export function detectLanguage(filePath: string): string | null {
-  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-  return EXT_LANG[ext] ?? null;
+// ── Language → WASM grammar file name map ────────────────────────────────────
+
+const LANG_WASM: Record<string, string> = {
+  typescript: "tree-sitter-typescript.wasm",
+  javascript: "tree-sitter-javascript.wasm",
+  python: "tree-sitter-python.wasm",
+  go: "tree-sitter-go.wasm",
+  rust: "tree-sitter-rust.wasm",
+  java: "tree-sitter-java.wasm",
+};
+
+// ── Parser / Language caches ──────────────────────────────────────────────────
+
+let parserInitPromise: Promise<void> | null = null;
+const languageCache = new Map<string, Parser.Language>();
+
+function getWasmDir(): string {
+  return pathResolve(
+    require.resolve("tree-sitter-wasms/package.json"),
+    "..",
+    "out"
+  );
 }
 
-// ── Path normalization ────────────────────────────────────────────────────────
+async function ensureParserReady(): Promise<void> {
+  if (!parserInitPromise) {
+    parserInitPromise = Parser.init();
+  }
+  return parserInitPromise;
+}
+
+async function getLanguage(name: string): Promise<Parser.Language | null> {
+  if (languageCache.has(name)) return languageCache.get(name)!;
+
+  const wasmFile = LANG_WASM[name];
+  if (!wasmFile) return null;
+
+  try {
+    const wasmBinary = readFileSync(pathResolve(getWasmDir(), wasmFile));
+    const lang = await Parser.Language.load(wasmBinary);
+    languageCache.set(name, lang);
+    return lang;
+  } catch (err) {
+    console.warn(`[ast-parser] failed to load grammar for ${name}:`, err);
+    return null;
+  }
+}
+
+// ── Path resolution ───────────────────────────────────────────────────────────
 
 function resolveImport(importPath: string, sourceFile: string): string {
   if (!importPath.startsWith(".")) return importPath;
@@ -105,292 +98,18 @@ function resolveImport(importPath: string, sourceFile: string): string {
     ? sourceFile.slice(0, sourceFile.lastIndexOf("/"))
     : "";
 
-  const parts = (sourceDir ? `${sourceDir}/${importPath}` : importPath).split("/");
+  const raw = sourceDir ? `${sourceDir}/${importPath}` : importPath;
+  const parts = raw.split("/");
   const resolved: string[] = [];
   for (const p of parts) {
     if (p === "..") resolved.pop();
     else if (p !== ".") resolved.push(p);
   }
   const joined = resolved.join("/");
-  if (!joined.includes(".")) return `${joined}.ts`;
-  return joined;
+  return joined.includes(".") ? joined : `${joined}.ts`;
 }
 
-// ── TypeScript/JavaScript — @babel/parser + @babel/traverse ──────────────────
-
-function parseTypeScriptWithBabel(content: string, sourceFile: string): AstEdge[] {
-  const edges: AstEdge[] = [];
-  const lang = detectLanguage(sourceFile) ?? "typescript";
-
-  // Dynamic require: next.js server components handle this correctly at runtime.
-  // @babel/parser and @babel/traverse are pure-JS packages (no native bindings).
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const babelParser = require("@babel/parser") as {
-    parse(code: string, opts: Record<string, unknown>): { program: { body: unknown[] }; errors: unknown[] };
-  };
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const traverseMod = require("@babel/traverse") as {
-    default?: (ast: unknown, visitors: Record<string, unknown>) => void;
-    (ast: unknown, visitors: Record<string, unknown>): void;
-  };
-  const traverse = traverseMod.default ?? traverseMod;
-
-  let ast: ReturnType<typeof babelParser.parse>;
-  try {
-    ast = babelParser.parse(content, {
-      sourceType: "module",
-      plugins: [
-        "typescript", "jsx", "decorators-legacy", "classProperties",
-        "classStaticBlock", "dynamicImport", "importMeta",
-        "optionalChaining", "nullishCoalescingOperator",
-      ],
-      errorRecovery: true,
-    });
-  } catch {
-    return fallbackRegexTS(content, sourceFile, lang);
-  }
-
-  // Track imported symbols → resolved target file (for call edge resolution)
-  const importedFrom = new Map<string, string>();
-
-  traverse(ast, {
-    ImportDeclaration(path: BabelNodePath<BabelImportDeclaration>) {
-      const target = resolveImport(path.node.source.value, sourceFile);
-      edges.push({ source_file: sourceFile, target_file: target, edge_type: "import", symbol_name: null, language: lang });
-      for (const spec of path.node.specifiers) {
-        importedFrom.set(spec.local.name, target);
-      }
-    },
-
-    CallExpression(path: BabelNodePath<BabelCallExpression>) {
-      const { callee, arguments: args } = path.node;
-
-      // Dynamic import('mod')
-      if (callee.type === "Import" && args.length > 0 && args[0].type === "StringLiteral") {
-        const val = (args[0] as BabelStringLiteral).value;
-        edges.push({ source_file: sourceFile, target_file: resolveImport(val, sourceFile), edge_type: "import", symbol_name: null, language: lang });
-        return;
-      }
-
-      // require('mod')
-      if (
-        callee.type === "Identifier" &&
-        (callee as BabelIdentifier).name === "require" &&
-        args.length > 0 &&
-        args[0].type === "StringLiteral"
-      ) {
-        const val = (args[0] as BabelStringLiteral).value;
-        const target = resolveImport(val, sourceFile);
-        edges.push({ source_file: sourceFile, target_file: target, edge_type: "import", symbol_name: null, language: lang });
-        return;
-      }
-
-      // Call edge: func() or obj.method() where func/obj is an imported symbol
-      let calledName: string | null = null;
-      if (callee.type === "Identifier") {
-        calledName = (callee as BabelIdentifier).name;
-      } else if (callee.type === "MemberExpression") {
-        const obj = (callee as BabelMemberExpression).object;
-        if (obj.type === "Identifier") calledName = obj.name ?? null;
-      }
-
-      if (calledName && importedFrom.has(calledName)) {
-        edges.push({
-          source_file: sourceFile,
-          target_file: importedFrom.get(calledName)!,
-          edge_type: "call",
-          symbol_name: calledName,
-          language: lang,
-        });
-      }
-    },
-
-    ClassDeclaration(path: BabelNodePath<BabelClassNode>) {
-      extractClassEdges(path.node, sourceFile, lang, importedFrom, edges);
-    },
-
-    ClassExpression(path: BabelNodePath<BabelClassNode>) {
-      extractClassEdges(path.node, sourceFile, lang, importedFrom, edges);
-    },
-  });
-
-  return dedup(edges);
-}
-
-function extractClassEdges(
-  node: BabelClassNode,
-  sourceFile: string,
-  lang: string,
-  importedFrom: Map<string, string>,
-  edges: AstEdge[]
-): void {
-  if (node.superClass?.type === "Identifier" && node.superClass.name) {
-    const parentName = node.superClass.name;
-    edges.push({
-      source_file: sourceFile,
-      target_file: importedFrom.get(parentName) ?? sourceFile,
-      edge_type: "inherit",
-      symbol_name: parentName,
-      language: lang,
-    });
-  }
-  if (node.implements) {
-    for (const impl of node.implements) {
-      const ifaceName = impl.expression?.name ?? impl.id?.name ?? "";
-      if (ifaceName) {
-        edges.push({
-          source_file: sourceFile,
-          target_file: importedFrom.get(ifaceName) ?? sourceFile,
-          edge_type: "implement",
-          symbol_name: ifaceName,
-          language: lang,
-        });
-      }
-    }
-  }
-}
-
-function fallbackRegexTS(content: string, sourceFile: string, lang: string): AstEdge[] {
-  const edges: AstEdge[] = [];
-  for (const line of content.split("\n")) {
-    const t = line.trim();
-    const m1 = t.match(/^import\s+.*?from\s+['"]([^'"]+)['"]/);
-    if (m1) { edges.push({ source_file: sourceFile, target_file: resolveImport(m1[1], sourceFile), edge_type: "import", symbol_name: null, language: lang }); continue; }
-    const m2 = t.match(/require\s*\(\s*['"]([^'"]+)['"]\s*\)/);
-    if (m2) { edges.push({ source_file: sourceFile, target_file: resolveImport(m2[1], sourceFile), edge_type: "import", symbol_name: null, language: lang }); continue; }
-    const m3 = t.match(/class\s+(\w+)\s+extends\s+(\w+)/);
-    if (m3) { edges.push({ source_file: sourceFile, target_file: sourceFile, edge_type: "inherit", symbol_name: m3[2], language: lang }); }
-  }
-  return dedup(edges);
-}
-
-// ── Python ────────────────────────────────────────────────────────────────────
-
-function parsePython(content: string, sourceFile: string): AstEdge[] {
-  const edges: AstEdge[] = [];
-
-  for (const line of content.split("\n")) {
-    const t = line.trim();
-
-    const fromImport = t.match(/^from\s+(\.{0,3}[\w.]*)\s+import\s+(.+)/);
-    if (fromImport) {
-      const rawMod = fromImport[1];
-      const modPath = rawMod.startsWith(".")
-        ? resolveImport(rawMod.replace(/\./g, "/"), sourceFile)
-        : rawMod.replace(/\./g, "/");
-      const symbols = fromImport[2].split(",").map((s) => s.trim().split(" ")[0]).filter(Boolean);
-      edges.push({ source_file: sourceFile, target_file: modPath, edge_type: "import", symbol_name: symbols[0] ?? null, language: "python" });
-      continue;
-    }
-
-    const importMod = t.match(/^import\s+([\w.]+)/);
-    if (importMod) {
-      edges.push({ source_file: sourceFile, target_file: importMod[1].replace(/\./g, "/"), edge_type: "import", symbol_name: null, language: "python" });
-      continue;
-    }
-
-    const classMatch = t.match(/^class\s+\w+\s*\(([^)]+)\)\s*:/);
-    if (classMatch) {
-      for (const base of classMatch[1].split(",").map((s) => s.trim().split("=").pop()!.trim()).filter((s) => s && s !== "object")) {
-        edges.push({ source_file: sourceFile, target_file: sourceFile, edge_type: "inherit", symbol_name: base, language: "python" });
-      }
-      continue;
-    }
-
-    // method call: module.func(
-    const pkgCall = t.match(/^(\w+)\.(\w+)\s*\(/);
-    if (pkgCall) {
-      edges.push({ source_file: sourceFile, target_file: sourceFile, edge_type: "call", symbol_name: `${pkgCall[1]}.${pkgCall[2]}`, language: "python" });
-    }
-  }
-
-  return dedup(edges);
-}
-
-// ── Go ────────────────────────────────────────────────────────────────────────
-
-function parseGo(content: string, sourceFile: string): AstEdge[] {
-  const edges: AstEdge[] = [];
-  const lines = content.split("\n");
-  let inImportBlock = false;
-
-  for (const line of lines) {
-    const t = line.trim();
-
-    if (t === "import (") { inImportBlock = true; continue; }
-    if (inImportBlock && t === ")") { inImportBlock = false; continue; }
-
-    if (inImportBlock) {
-      const m = t.match(/^(?:\w+\s+)?["']([^"']+)["']/);
-      if (m) edges.push({ source_file: sourceFile, target_file: m[1], edge_type: "import", symbol_name: null, language: "go" });
-      continue;
-    }
-
-    const single = t.match(/^import\s+(?:\w+\s+)?["']([^"']+)["']/);
-    if (single) edges.push({ source_file: sourceFile, target_file: single[1], edge_type: "import", symbol_name: null, language: "go" });
-
-    const pkgCall = t.match(/^(\w+)\.(\w+)\s*\(/);
-    if (pkgCall) edges.push({ source_file: sourceFile, target_file: pkgCall[1], edge_type: "call", symbol_name: `${pkgCall[1]}.${pkgCall[2]}`, language: "go" });
-  }
-
-  return dedup(edges);
-}
-
-// ── Rust ──────────────────────────────────────────────────────────────────────
-
-function parseRust(content: string, sourceFile: string): AstEdge[] {
-  const edges: AstEdge[] = [];
-
-  for (const line of content.split("\n")) {
-    const t = line.trim();
-
-    const useMatch = t.match(/^use\s+([\w:]+(?:::\{[^}]+\})?)\s*;/);
-    if (useMatch) {
-      const path = useMatch[1].replace(/::\{[^}]+\}$/, "").replace(/::/g, "/");
-      edges.push({ source_file: sourceFile, target_file: path, edge_type: "import", symbol_name: null, language: "rust" });
-      continue;
-    }
-
-    const implFor = t.match(/^impl\s+([\w<>]+)\s+for\s+(\w+)/);
-    if (implFor) {
-      edges.push({ source_file: sourceFile, target_file: sourceFile, edge_type: "implement", symbol_name: implFor[1], language: "rust" });
-    }
-  }
-
-  return dedup(edges);
-}
-
-// ── Java ──────────────────────────────────────────────────────────────────────
-
-function parseJava(content: string, sourceFile: string): AstEdge[] {
-  const edges: AstEdge[] = [];
-
-  for (const line of content.split("\n")) {
-    const t = line.trim();
-
-    const importMatch = t.match(/^import\s+(?:static\s+)?([\w.]+);/);
-    if (importMatch) {
-      edges.push({ source_file: sourceFile, target_file: importMatch[1].replace(/\./g, "/"), edge_type: "import", symbol_name: null, language: "java" });
-      continue;
-    }
-
-    const classMatch = t.match(/(?:class|interface)\s+\w+(?:<[^>]+>)?\s+(?:extends\s+([\w<>]+))?\s*(?:implements\s+([\w<>,\s]+))?/);
-    if (classMatch) {
-      if (classMatch[1]) {
-        edges.push({ source_file: sourceFile, target_file: sourceFile, edge_type: "inherit", symbol_name: classMatch[1].split("<")[0], language: "java" });
-      }
-      if (classMatch[2]) {
-        for (const iface of classMatch[2].split(",").map((s) => s.trim().split("<")[0]).filter(Boolean)) {
-          edges.push({ source_file: sourceFile, target_file: sourceFile, edge_type: "implement", symbol_name: iface, language: "java" });
-        }
-      }
-    }
-  }
-
-  return dedup(edges);
-}
-
-// ── Dedup ─────────────────────────────────────────────────────────────────────
+// ── Deduplication ─────────────────────────────────────────────────────────────
 
 function dedup(edges: AstEdge[]): AstEdge[] {
   const seen = new Set<string>();
@@ -402,28 +121,473 @@ function dedup(edges: AstEdge[]): AstEdge[] {
   });
 }
 
+// ── Tree traversal helper ─────────────────────────────────────────────────────
+
+function childrenOf(node: SyntaxNode): SyntaxNode[] {
+  const out: SyntaxNode[] = [];
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (c) out.push(c);
+  }
+  return out;
+}
+
+function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (c?.type === type) return c;
+  }
+  return null;
+}
+
+function findAllChildren(node: SyntaxNode, type: string): SyntaxNode[] {
+  const out: SyntaxNode[] = [];
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (c?.type === type) out.push(c);
+  }
+  return out;
+}
+
+/** Walk the tree depth-first and collect all nodes matching any of the given types. */
+function walkCollect(root: SyntaxNode, types: Set<string>): SyntaxNode[] {
+  const results: SyntaxNode[] = [];
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (types.has(node.type)) results.push(node);
+    for (let i = node.childCount - 1; i >= 0; i--) {
+      const c = node.child(i);
+      if (c) stack.push(c);
+    }
+  }
+  return results;
+}
+
+// ── JavaScript / TypeScript edge extraction ───────────────────────────────────
+
+function extractJsEdges(tree: Parser.Tree, sourceFile: string, lang: string): AstEdge[] {
+  const edges: AstEdge[] = [];
+  const importedSymbols = new Map<string, string>(); // symbol → resolved target file
+
+  const targetTypes = new Set([
+    "import_statement",
+    "call_expression",
+    "class_declaration",
+    "class",
+  ]);
+  const nodes = walkCollect(tree.rootNode, targetTypes);
+
+  for (const node of nodes) {
+    switch (node.type) {
+      case "import_statement": {
+        // import { foo } from "./bar"   or   import foo from "./bar"
+        const stringNode = findChild(node, "string");
+        if (!stringNode) break;
+        const fragment = findChild(stringNode, "string_fragment");
+        const modPath = (fragment ?? stringNode).text.replace(/^['"]|['"]$/g, "");
+        const target = resolveImport(modPath, sourceFile);
+        edges.push({ source_file: sourceFile, target_file: target, edge_type: "import", symbol_name: null, language: lang });
+
+        // Track which local names come from which module (for call edge resolution)
+        const clauseNode = findChild(node, "import_clause");
+        if (clauseNode) {
+          // Default import: identifier child
+          const defaultId = findChild(clauseNode, "identifier");
+          if (defaultId) importedSymbols.set(defaultId.text, target);
+
+          // Named imports: named_imports → import_specifier → identifier
+          const namedImports = findChild(clauseNode, "named_imports");
+          if (namedImports) {
+            for (const spec of findAllChildren(namedImports, "import_specifier")) {
+              const id = findChild(spec, "identifier");
+              if (id) importedSymbols.set(id.text, target);
+            }
+          }
+
+          // Namespace import: namespace_import → identifier
+          const nsImport = findChild(clauseNode, "namespace_import");
+          if (nsImport) {
+            const id = findChild(nsImport, "identifier");
+            if (id) importedSymbols.set(id.text, target);
+          }
+        }
+        break;
+      }
+
+      case "call_expression": {
+        const callee = node.child(0);
+        if (!callee) break;
+        const args = findChild(node, "arguments");
+
+        // Dynamic import('path') — callee type is "import"
+        if (callee.type === "import" && args) {
+          const strArg = findChild(args, "string");
+          if (strArg) {
+            const frag = findChild(strArg, "string_fragment");
+            const modPath = (frag ?? strArg).text.replace(/^['"]|['"]$/g, "");
+            edges.push({ source_file: sourceFile, target_file: resolveImport(modPath, sourceFile), edge_type: "import", symbol_name: null, language: lang });
+          }
+          break;
+        }
+
+        // require('path')
+        if (callee.type === "identifier" && callee.text === "require" && args) {
+          const strArg = findChild(args, "string");
+          if (strArg) {
+            const frag = findChild(strArg, "string_fragment");
+            const modPath = (frag ?? strArg).text.replace(/^['"]|['"]$/g, "");
+            const target = resolveImport(modPath, sourceFile);
+            edges.push({ source_file: sourceFile, target_file: target, edge_type: "import", symbol_name: null, language: lang });
+            importedSymbols.set("require", target);
+          }
+          break;
+        }
+
+        // Call edge: identifier() where identifier is an imported symbol
+        if (callee.type === "identifier" && importedSymbols.has(callee.text)) {
+          edges.push({
+            source_file: sourceFile,
+            target_file: importedSymbols.get(callee.text)!,
+            edge_type: "call",
+            symbol_name: callee.text,
+            language: lang,
+          });
+          break;
+        }
+
+        // Call edge: obj.method() where obj is an imported symbol
+        if (callee.type === "member_expression") {
+          const obj = callee.child(0);
+          if (obj?.type === "identifier" && importedSymbols.has(obj.text)) {
+            const prop = callee.child(2); // dot is child(1)
+            edges.push({
+              source_file: sourceFile,
+              target_file: importedSymbols.get(obj.text)!,
+              edge_type: "call",
+              symbol_name: prop ? `${obj.text}.${prop.text}` : obj.text,
+              language: lang,
+            });
+          }
+        }
+        break;
+      }
+
+      case "class_declaration":
+      case "class": {
+        // class Child extends Parent
+        const heritage = findChild(node, "class_heritage");
+        if (heritage) {
+          const superName = findChild(heritage, "identifier");
+          if (superName) {
+            edges.push({
+              source_file: sourceFile,
+              target_file: importedSymbols.get(superName.text) ?? sourceFile,
+              edge_type: "inherit",
+              symbol_name: superName.text,
+              language: lang,
+            });
+          }
+
+          // implements clause (TypeScript)
+          for (const impl of findAllChildren(heritage, "type_identifier")) {
+            edges.push({
+              source_file: sourceFile,
+              target_file: importedSymbols.get(impl.text) ?? sourceFile,
+              edge_type: "implement",
+              symbol_name: impl.text,
+              language: lang,
+            });
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  return dedup(edges);
+}
+
+// ── Python edge extraction ────────────────────────────────────────────────────
+
+function extractPythonEdges(tree: Parser.Tree, sourceFile: string): AstEdge[] {
+  const edges: AstEdge[] = [];
+
+  const targetTypes = new Set(["import_statement", "import_from_statement", "class_definition"]);
+  const nodes = walkCollect(tree.rootNode, targetTypes);
+
+  for (const node of nodes) {
+    switch (node.type) {
+      case "import_statement": {
+        // import os  /  import foo.bar
+        const dotted = findChild(node, "dotted_name");
+        if (dotted) {
+          edges.push({ source_file: sourceFile, target_file: dotted.text.replace(/\./g, "/"), edge_type: "import", symbol_name: null, language: "python" });
+        }
+        break;
+      }
+
+      case "import_from_statement": {
+        // from .helpers import do_thing  /  from pathlib import Path
+        const relImport = findChild(node, "relative_import");
+        const dottedName = findChild(node, "dotted_name");
+        let modPath = "";
+
+        if (relImport) {
+          // relative import: prefix (dots) + optional dotted_name
+          const prefix = findChild(relImport, "import_prefix");
+          const dots = prefix ? prefix.text.length : 0;
+          const subMod = findChild(relImport, "dotted_name");
+          const base = subMod ? subMod.text.replace(/\./g, "/") : "";
+          // Resolve dots relative to source file directory
+          const parts = sourceFile.split("/");
+          const dirParts = parts.slice(0, parts.length - dots);
+          modPath = base ? [...dirParts, base].join("/") : dirParts.join("/");
+        } else if (dottedName) {
+          modPath = dottedName.text.replace(/\./g, "/");
+        }
+
+        if (modPath) {
+          edges.push({ source_file: sourceFile, target_file: modPath, edge_type: "import", symbol_name: null, language: "python" });
+        }
+        break;
+      }
+
+      case "class_definition": {
+        // class Foo(Bar, Baz):
+        const argList = findChild(node, "argument_list");
+        if (argList) {
+          for (const child of childrenOf(argList)) {
+            if (child.type === "identifier" && child.text !== "object") {
+              edges.push({ source_file: sourceFile, target_file: sourceFile, edge_type: "inherit", symbol_name: child.text, language: "python" });
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  return dedup(edges);
+}
+
+// ── Go edge extraction ────────────────────────────────────────────────────────
+
+function extractGoEdges(tree: Parser.Tree, sourceFile: string): AstEdge[] {
+  const edges: AstEdge[] = [];
+
+  const targetTypes = new Set(["import_declaration", "import_spec", "call_expression"]);
+  const nodes = walkCollect(tree.rootNode, targetTypes);
+
+  for (const node of nodes) {
+    switch (node.type) {
+      case "import_spec": {
+        // Each import spec: optional alias + string path
+        const strNode =
+          findChild(node, "interpreted_string_literal") ??
+          findChild(node, "raw_string_literal");
+        if (strNode) {
+          const path = strNode.text.replace(/^["'`]|["'`]$/g, "");
+          edges.push({ source_file: sourceFile, target_file: path, edge_type: "import", symbol_name: null, language: "go" });
+        }
+        break;
+      }
+
+      case "import_declaration": {
+        // Single-line import: import "path"
+        const strNode =
+          findChild(node, "interpreted_string_literal") ??
+          findChild(node, "raw_string_literal");
+        if (strNode) {
+          const path = strNode.text.replace(/^["'`]|["'`]$/g, "");
+          edges.push({ source_file: sourceFile, target_file: path, edge_type: "import", symbol_name: null, language: "go" });
+        }
+        break;
+      }
+
+      case "call_expression": {
+        // fmt.Println(...) → selector_expression
+        const callee = node.child(0);
+        if (callee?.type === "selector_expression") {
+          const pkg = callee.child(0);
+          const fn = callee.child(2);
+          if (pkg?.type === "identifier" && fn) {
+            edges.push({
+              source_file: sourceFile,
+              target_file: pkg.text,
+              edge_type: "call",
+              symbol_name: `${pkg.text}.${fn.text}`,
+              language: "go",
+            });
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  return dedup(edges);
+}
+
+// ── Rust edge extraction ──────────────────────────────────────────────────────
+
+function collectRustPath(node: SyntaxNode): string {
+  // Recursively collect scoped_identifier / scoped_use_list path as a string
+  if (node.type === "identifier" || node.type === "type_identifier") return node.text;
+  if (node.type === "scoped_identifier") {
+    const left = node.child(0);
+    const right = node.child(2);
+    if (left && right) return `${collectRustPath(left)}/${collectRustPath(right)}`;
+  }
+  if (node.type === "scoped_use_list") {
+    const base = node.child(0);
+    return base ? collectRustPath(base) : "";
+  }
+  return node.text;
+}
+
+function extractRustEdges(tree: Parser.Tree, sourceFile: string): AstEdge[] {
+  const edges: AstEdge[] = [];
+
+  const targetTypes = new Set(["use_declaration", "impl_item"]);
+  const nodes = walkCollect(tree.rootNode, targetTypes);
+
+  for (const node of nodes) {
+    switch (node.type) {
+      case "use_declaration": {
+        // use std::collections::HashMap;
+        // use foo::bar::{Baz, Qux};
+        const pathNode = node.child(1);
+        if (pathNode) {
+          const path = collectRustPath(pathNode);
+          if (path) {
+            edges.push({ source_file: sourceFile, target_file: path, edge_type: "import", symbol_name: null, language: "rust" });
+          }
+        }
+        break;
+      }
+
+      case "impl_item": {
+        // impl Serialize for MyStruct  →  implement edge
+        // impl MyStruct                →  no edge (plain impl block)
+        const forKw = findChild(node, "for");
+        if (forKw) {
+          // trait impl: first type_identifier = trait, last = struct
+          const typeIds = findAllChildren(node, "type_identifier");
+          if (typeIds.length >= 2) {
+            edges.push({
+              source_file: sourceFile,
+              target_file: sourceFile,
+              edge_type: "implement",
+              symbol_name: typeIds[0].text,
+              language: "rust",
+            });
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  return dedup(edges);
+}
+
+// ── Java edge extraction ──────────────────────────────────────────────────────
+
+function collectJavaPath(node: SyntaxNode): string {
+  if (node.type === "identifier" || node.type === "type_identifier") return node.text;
+  if (node.type === "scoped_identifier") {
+    const left = node.child(0);
+    const right = node.child(2);
+    if (left && right) return `${collectJavaPath(left)}/${collectJavaPath(right)}`;
+  }
+  return node.text;
+}
+
+function extractJavaEdges(tree: Parser.Tree, sourceFile: string): AstEdge[] {
+  const edges: AstEdge[] = [];
+
+  const targetTypes = new Set(["import_declaration", "class_declaration", "interface_declaration"]);
+  const nodes = walkCollect(tree.rootNode, targetTypes);
+
+  for (const node of nodes) {
+    switch (node.type) {
+      case "import_declaration": {
+        // import java.util.List;  /  import static org.junit.Assert.*;
+        const pathNode =
+          findChild(node, "scoped_identifier") ??
+          findChild(node, "identifier");
+        if (pathNode) {
+          edges.push({ source_file: sourceFile, target_file: collectJavaPath(pathNode), edge_type: "import", symbol_name: null, language: "java" });
+        }
+        break;
+      }
+
+      case "class_declaration":
+      case "interface_declaration": {
+        // extends BaseClass
+        const superclass = findChild(node, "superclass");
+        if (superclass) {
+          const typeId = findChild(superclass, "type_identifier");
+          if (typeId) {
+            edges.push({ source_file: sourceFile, target_file: sourceFile, edge_type: "inherit", symbol_name: typeId.text, language: "java" });
+          }
+        }
+
+        // implements Runnable, Closeable
+        const superIfaces = findChild(node, "super_interfaces");
+        if (superIfaces) {
+          const typeList = findChild(superIfaces, "type_list");
+          if (typeList) {
+            for (const typeId of findAllChildren(typeList, "type_identifier")) {
+              edges.push({ source_file: sourceFile, target_file: sourceFile, edge_type: "implement", symbol_name: typeId.text, language: "java" });
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  return dedup(edges);
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
+
+export function detectLanguage(filePath: string): string | null {
+  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+  return EXT_LANG[ext] ?? null;
+}
 
 /**
  * Parse a file and return all structural dependency edges.
- * TS/JS: uses @babel/parser for proper AST analysis (import, call, inherit, implement).
- * Python/Go/Rust/Java: structured regex covering the same edge types.
+ * Uses tree-sitter WASM grammars for all 6 languages — proper AST, not regex.
  */
-export function parseAstEdges(filePath: string, content: string): AstEdge[] {
+export async function parseAstEdges(filePath: string, content: string): Promise<AstEdge[]> {
   try {
     const lang = detectLanguage(filePath);
+    if (!lang) return [];
+
+    await ensureParserReady();
+    const language = await getLanguage(lang);
+    if (!language) return [];
+
+    const parser = new Parser();
+    parser.setLanguage(language);
+    const tree = parser.parse(content);
+
     switch (lang) {
       case "typescript":
       case "javascript":
-        return parseTypeScriptWithBabel(content, filePath);
+        return extractJsEdges(tree, filePath, lang);
       case "python":
-        return parsePython(content, filePath);
+        return extractPythonEdges(tree, filePath);
       case "go":
-        return parseGo(content, filePath);
+        return extractGoEdges(tree, filePath);
       case "rust":
-        return parseRust(content, filePath);
+        return extractRustEdges(tree, filePath);
       case "java":
-        return parseJava(content, filePath);
+        return extractJavaEdges(tree, filePath);
       default:
         return [];
     }
@@ -434,90 +598,78 @@ export function parseAstEdges(filePath: string, content: string): AstEdge[] {
 }
 
 /**
- * Analyze full file structure and return top-level class names + primary node type.
+ * Analyze file structure: returns top-level class names and primary node type.
  * Used by repo-indexer to populate ast_parent and ast_node_type on github_chunks.
  */
-export function analyzeFileStructure(content: string, filePath: string): {
-  topLevelClasses: string[];
-  nodeType: string | null;
-} {
-  const lang = detectLanguage(filePath);
-  if (!lang) return { topLevelClasses: [], nodeType: null };
+export async function analyzeFileStructure(
+  content: string,
+  filePath: string
+): Promise<{ topLevelClasses: string[]; nodeType: string | null }> {
+  try {
+    const lang = detectLanguage(filePath);
+    if (!lang) return { topLevelClasses: [], nodeType: null };
 
-  if (lang === "typescript" || lang === "javascript") {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const babelParser = require("@babel/parser") as {
-        parse(code: string, opts: Record<string, unknown>): { program: { body: BabelTopLevelNode[] } };
-      };
-      const ast = babelParser.parse(content, {
-        sourceType: "module",
-        plugins: ["typescript", "jsx", "decorators-legacy", "classProperties"],
-        errorRecovery: true,
-      });
+    await ensureParserReady();
+    const language = await getLanguage(lang);
+    if (!language) return { topLevelClasses: [], nodeType: null };
 
-      const classes: string[] = [];
-      let firstNodeType: string | null = null;
+    const parser = new Parser();
+    parser.setLanguage(language);
+    const tree = parser.parse(content);
 
-      for (const stmt of ast.program.body) {
-        const inner = stmt.declaration ?? stmt;
-        if (inner.type === "ClassDeclaration" || inner.type === "ClassExpression") {
-          if (inner.id?.name) classes.push(inner.id.name);
-          if (!firstNodeType) firstNodeType = "class";
-        } else if (inner.type === "FunctionDeclaration" || inner.type === "ArrowFunctionExpression") {
-          if (!firstNodeType) firstNodeType = "function";
-        } else if (inner.type === "TSInterfaceDeclaration") {
-          if (!firstNodeType) firstNodeType = "interface";
-        } else if (inner.type === "TSTypeAliasDeclaration") {
-          if (!firstNodeType) firstNodeType = "type_alias";
-        } else if (inner.type === "TSEnumDeclaration") {
-          if (!firstNodeType) firstNodeType = "enum";
-        } else if (inner.type === "VariableDeclaration") {
-          if (!firstNodeType) firstNodeType = "const";
+    const classes: string[] = [];
+    let nodeType: string | null = null;
+
+    const topLevelNodes = tree.rootNode.children;
+    for (const node of topLevelNodes) {
+      switch (node.type) {
+        case "import_declaration":
+        case "import_statement":
+        case "import_from_statement":
+        case "use_declaration":
+          break;
+        case "class_declaration":
+        case "class": {
+          if (!nodeType) nodeType = "class";
+          const idNode = findChild(node, "identifier") ?? findChild(node, "type_identifier");
+          if (idNode) classes.push(idNode.text);
+          break;
         }
+        case "interface_declaration":
+          if (!nodeType) nodeType = "interface";
+          break;
+        case "function_declaration":
+        case "function_definition":
+        case "function_item":
+          if (!nodeType) nodeType = "function";
+          break;
+        case "impl_item":
+          if (!nodeType) nodeType = "impl";
+          break;
+        case "lexical_declaration":
+        case "variable_declaration":
+          if (!nodeType) nodeType = "const";
+          break;
+        case "type_alias_declaration":
+          if (!nodeType) nodeType = "type_alias";
+          break;
+        case "enum_declaration":
+          if (!nodeType) nodeType = "enum";
+          break;
       }
-
-      return { topLevelClasses: classes, nodeType: firstNodeType };
-    } catch {
-      // fall through to regex
     }
+
+    return { topLevelClasses: classes, nodeType };
+  } catch (err) {
+    console.warn(`[ast-parser] analyzeFileStructure error for ${filePath}:`, err);
+    return { topLevelClasses: [], nodeType: null };
   }
-
-  // Regex fallback (all non-TS/JS languages + TS/JS fallback)
-  const first = content.trim().slice(0, 500);
-  let nodeType: string | null = null;
-  if (/^(export\s+)?(async\s+)?function\s+/.test(first)) nodeType = "function";
-  else if (/^(export\s+)?(abstract\s+)?class\s+/.test(first)) nodeType = "class";
-  else if (/^(export\s+)?interface\s+/.test(first)) nodeType = "interface";
-  else if (/^(export\s+)?type\s+\w+\s*=/.test(first)) nodeType = "type_alias";
-  else if (/^(export\s+)?enum\s+/.test(first)) nodeType = "enum";
-  else if (/^(export\s+)?const\s+/.test(first)) nodeType = "const";
-  else if (/^(async\s+)?def\s+\w+/.test(first)) nodeType = "function";
-  else if (/^class\s+\w+/.test(first)) nodeType = "class";
-  else if (/^func\s+\w+/.test(first) || /^func\s*\(/.test(first)) nodeType = "function";
-  else if (/^(pub\s+)?fn\s+\w+/.test(first)) nodeType = "function";
-
-  const classMatches = Array.from(content.matchAll(/^(?:export\s+)?(?:abstract\s+)?class\s+(\w+)/gm));
-  const topLevelClasses = classMatches.map((m) => m[1]);
-
-  return { topLevelClasses, nodeType };
-}
-
-// Internal type for babel program body nodes
-interface BabelTopLevelNode {
-  type: string;
-  declaration?: {
-    type: string;
-    id?: { name?: string } | null;
-    superClass?: { type: string; name?: string } | null;
-  };
-  id?: { name?: string } | null;
 }
 
 /**
  * Detect the primary AST node type for a chunk of code.
- * Convenience wrapper around analyzeFileStructure.
  */
-export function detectNodeType(content: string, filePath: string): string | null {
-  return analyzeFileStructure(content, filePath).nodeType;
+export async function detectNodeType(content: string, filePath: string): Promise<string | null> {
+  const { nodeType } = await analyzeFileStructure(content, filePath);
+  return nodeType;
 }

@@ -10,8 +10,8 @@
   },
   "private": true,
   "devDependencies": {
-    "typescript": "~5.9.2",
-    "prettier": "^3.8.1"
+    "prettier": "^3.8.1",
+    "typescript": "~5.9.2"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -23,5 +23,9 @@
       "tree-sitter-rust",
       "tree-sitter-typescript"
     ]
+  },
+  "dependencies": {
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "^0.20.8"
   }
 }

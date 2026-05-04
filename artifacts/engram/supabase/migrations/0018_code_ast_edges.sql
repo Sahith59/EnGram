@@ -41,11 +41,10 @@ create policy "team members can view ast edges"
     )
   );
 
-drop policy if exists "service role can manage ast edges" on public.code_ast_edges;
-create policy "service role can manage ast edges"
-  on public.code_ast_edges for all
-  using (true)
-  with check (true);
+-- Service role bypasses RLS by default in Supabase (pg_bypass_rls privilege).
+-- No explicit service-role policy is needed; the select policy above covers
+-- authenticated reads. All writes go through the service-role client which
+-- bypasses RLS entirely, so no additional policy is required here.
 
 -- Add AST metadata columns to github_chunks
 alter table public.github_chunks
