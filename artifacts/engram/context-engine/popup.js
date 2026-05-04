@@ -264,11 +264,49 @@ teamPicker.addEventListener("change", async () => {
 
 // ── Tab context ───────────────────────────────────────────────────────────────
 
+const checkpointBtn = document.getElementById("checkpoint-btn");
+const checkpointPanel = document.getElementById("checkpoint-panel");
+const checkpointBrief = document.getElementById("checkpoint-brief");
+const checkpointTokenEst = document.getElementById("checkpoint-token-est");
+const checkpointCopy = document.getElementById("checkpoint-copy");
+const checkpointOpen = document.getElementById("checkpoint-open");
+const checkpointDismiss = document.getElementById("checkpoint-dismiss");
+const checkpointProjectLabel = document.getElementById("checkpoint-project-label");
+let lastCheckpointProjectId = null;
+
+checkpointDismiss.addEventListener("click", () => {
+  checkpointPanel.style.display = "none";
+});
+
+checkpointCopy.addEventListener("click", async () => {
+  const text = checkpointBrief.value;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    checkpointCopy.textContent = "✓ Copied!";
+    setTimeout(() => { checkpointCopy.textContent = "Copy & paste into new tab"; }, 2500);
+  } catch {
+    checkpointBrief.select();
+    document.execCommand("copy");
+    checkpointCopy.textContent = "✓ Copied!";
+    setTimeout(() => { checkpointCopy.textContent = "Copy & paste into new tab"; }, 2500);
+  }
+});
+
+checkpointOpen.addEventListener("click", async () => {
+  const { url } = await send({ type: "GET_API_URL" });
+  const dest = lastCheckpointProjectId
+    ? `${url}/projects/${lastCheckpointProjectId}?tab=brief`
+    : `${url}/projects`;
+  chrome.tabs.create({ url: dest });
+});
+
 async function refreshTabContext() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const host = tab?.url ? new URL(tab.url).hostname : "";
   const isSupported = SUPPORTED.some((h) => host.includes(h));
   captureBtn.disabled = !isSupported;
+  checkpointBtn.disabled = !isSupported;
   captureBtn.textContent = isSupported
     ? "Capture this conversation"
     : "Open ChatGPT, Claude, or Gemini";
@@ -341,6 +379,64 @@ captureBtn.addEventListener("click", async () => {
   } catch (err) {
     showToast(`Capture failed — ${err.message}`, "err");
   }
+  await refreshTabContext();
+});
+
+// ── Checkpoint ────────────────────────────────────────────────────────────────
+
+checkpointBtn.addEventListener("click", async () => {
+  checkpointBtn.disabled = true;
+  checkpointBtn.textContent = "⏳ Generating continuation brief…";
+  checkpointPanel.style.display = "none";
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  try {
+    const ready = await ensureContentScript(tab.id);
+    if (!ready) {
+      showToast("Could not read conversation from this page.", "err");
+      checkpointBtn.disabled = false;
+      checkpointBtn.textContent = "⚡ Save Checkpoint & Get Continuation Brief";
+      return;
+    }
+
+    // Get pairs from content script (read-only, no fingerprint check)
+    const pairsResult = await chrome.tabs.sendMessage(tab.id, { type: "GET_PAIRS" });
+    if (!pairsResult?.ok || !pairsResult.pairs?.length) {
+      showToast("No conversation found to checkpoint.", "err");
+      checkpointBtn.disabled = false;
+      checkpointBtn.textContent = "⚡ Save Checkpoint & Get Continuation Brief";
+      return;
+    }
+
+    // Send to background → /api/checkpoint (synchronous brief generation)
+    const result = await send({
+      type: "CHECKPOINT",
+      payload: {
+        pairs: pairsResult.pairs,
+        tool: pairsResult.tool,
+        url: tab.url,
+      },
+    });
+
+    if (result?.ok && result.data?.continuation_brief) {
+      const d = result.data;
+      checkpointBrief.value = d.continuation_brief;
+      checkpointTokenEst.textContent = `~${(d.token_estimate ?? 0).toLocaleString()} tokens`;
+      lastCheckpointProjectId = d.project_id ?? null;
+      checkpointProjectLabel.textContent = d.project_name
+        ? `Project: ${d.project_name}${d.claim_count > 0 ? ` · ${d.claim_count} ENGRAM claims included` : ""}`
+        : "No project context detected — session summary only";
+      checkpointPanel.style.display = "block";
+      showToast("Checkpoint saved — brief ready to copy!", "ok");
+    } else {
+      showToast(result?.error ?? "Checkpoint failed. Try again.", "err");
+    }
+  } catch (err) {
+    showToast(`Checkpoint failed — ${err.message}`, "err");
+  }
+
+  checkpointBtn.disabled = false;
+  checkpointBtn.textContent = "⚡ Save Checkpoint & Get Continuation Brief";
   await refreshTabContext();
 });
 

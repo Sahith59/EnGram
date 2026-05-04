@@ -1,7 +1,9 @@
 {
   "/api/capture/route": "app/api/capture/route.js",
-  "/api/teams/route": "app/api/teams/route.js",
-  "/(app)/projects/[id]/page": "app/(app)/projects/[id]/page.js",
+  "/api/ask/route": "app/api/ask/route.js",
   "/(app)/dashboard/page": "app/(app)/dashboard/page.js",
-  "/(app)/projects/page": "app/(app)/projects/page.js"
+  "/(app)/projects/[id]/page": "app/(app)/projects/[id]/page.js",
+  "/(app)/settings/github/page": "app/(app)/settings/github/page.js",
+  "/(app)/context/[id]/page": "app/(app)/context/[id]/page.js",
+  "/(app)/ask/page": "app/(app)/ask/page.js"
 }

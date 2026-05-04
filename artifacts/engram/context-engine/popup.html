@@ -215,6 +215,33 @@
       </div>
 
       <button id="capture-btn" class="btn primary" disabled>Capture this conversation</button>
+      <button id="checkpoint-btn" class="btn" disabled style="margin-top:6px; border-color: rgba(124,58,237,0.4); color: var(--engram-light); font-size: 12px; padding: 8px 12px;">
+        ⚡ Save Checkpoint &amp; Get Continuation Brief
+      </button>
+
+      <!-- ── Continuation brief panel (shown after checkpoint) ── -->
+      <div id="checkpoint-panel" style="display:none; margin-top:10px;">
+        <div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">
+          <span style="font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted);">Continuation Brief</span>
+          <span id="checkpoint-token-est" style="font-size:10px; color:var(--muted);"></span>
+          <button id="checkpoint-dismiss" style="margin-left:auto; background:none; border:none; color:var(--muted); cursor:pointer; font-size:13px; padding:0;">✕</button>
+        </div>
+        <textarea id="checkpoint-brief" readonly
+          style="width:100%; box-sizing:border-box; height:120px; background:var(--bg);
+                 border:1px solid var(--border); border-radius:6px; padding:8px;
+                 color:var(--text); font-family:ui-monospace,SFMono-Regular,monospace;
+                 font-size:10px; line-height:1.5; resize:vertical; outline:none;">
+        </textarea>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          <button id="checkpoint-copy" class="btn primary" style="margin-top:0; font-size:12px; padding:7px;">
+            Copy &amp; paste into new tab
+          </button>
+          <button id="checkpoint-open" class="btn" style="margin-top:0; font-size:12px; padding:7px; flex:0 0 auto;">
+            Open project →
+          </button>
+        </div>
+        <p id="checkpoint-project-label" style="margin:5px 0 0; font-size:10px; color:var(--muted); text-align:center;"></p>
+      </div>
 
       <!-- ── Detected project card (shown after a successful capture) ── -->
       <div id="detected-project">

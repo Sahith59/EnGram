@@ -213,6 +213,52 @@ async function reassignSnapshot({ snapshotId, projectId }) {
   }
 }
 
+// ----- Checkpoint: save + generate continuation brief -----
+async function checkpoint(payload) {
+  await setBadge("⚡", "#7c3aed");
+  const api = await getApiUrl();
+  const ident = await fetchIdentity();
+
+  if (!ident?.connected) {
+    await setBadge("!", "#eab308", 4000);
+    return {
+      ok: false,
+      error: "Not signed in. Open the ENGRAM dashboard and sign in.",
+    };
+  }
+
+  let resolvedTeamId = ident.team_id;
+  const { engram_team_id } = await chrome.storage.local.get("engram_team_id");
+  if (engram_team_id) resolvedTeamId = engram_team_id;
+
+  try {
+    const res = await fetch(`${api}/api/checkpoint`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pairs: payload.pairs,
+        tool: payload.tool,
+        url: payload.url,
+        userId: ident.user.id,
+        teamId: resolvedTeamId,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      await setBadge("!", "#eab308", 4000);
+      return { ok: false, error: data?.error ?? `Checkpoint failed (${res.status})` };
+    }
+
+    await setBadge("⚡", "#22c55e", 5000);
+    return { ok: true, data };
+  } catch (err) {
+    await setBadge("!", "#eab308", 4000);
+    return { ok: false, error: String(err) };
+  }
+}
+
 // ----- Drain queued captures opportunistically -----
 async function drainQueue() {
   const { engram_queue = [] } = await chrome.storage.local.get("engram_queue");
@@ -283,9 +329,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     );
     return true;
   }
-  // Single-pair capture
+    // Single-pair capture
   if (msg?.type === "CAPTURE_PAIR") {
     capture(msg.payload).then(sendResponse);
+    return true;
+  }
+  // CHECKPOINT — save session + return continuation brief synchronously
+  if (msg?.type === "CHECKPOINT") {
+    checkpoint(msg.payload).then(sendResponse);
     return true;
   }
 });

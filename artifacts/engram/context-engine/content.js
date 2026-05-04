@@ -915,6 +915,16 @@
           tryCapture({ reason: "manual", verbose: true, minPairs: 1 }).then(sendResponse);
           return true;
         }
+        // GET_PAIRS — read-only DOM extraction for checkpoint (no capture side-effects)
+        if (msg?.type === "GET_PAIRS") {
+          try {
+            const pairs = extractPairs();
+            sendResponse({ ok: true, pairs, tool: TOOL });
+          } catch (e) {
+            sendResponse({ ok: false, error: String(e), pairs: [] });
+          }
+          return false;
+        }
       });
     } catch (e) {
       console.warn("[engram] could not install message listener:", e);
