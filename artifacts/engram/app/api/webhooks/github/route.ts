@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
   let payload: {
     ref?: string;
     after?: string;
-    repository?: { full_name?: string };
+    repository?: { full_name?: string; default_branch?: string };
     head_commit?: { message?: string; timestamp?: string };
     commits?: Array<{
       id?: string;
@@ -82,6 +82,15 @@ export async function POST(request: NextRequest) {
 
   if (!repoFullName || !commitSha || commitSha === "0000000000000000000000000000000000000000") {
     return NextResponse.json({ ok: true, skipped: "no_repo_or_delete_event" });
+  }
+
+  // Only process pushes to the default branch (main/master/etc.)
+  // Webhook payload provides the pushed ref (e.g. "refs/heads/main")
+  // and the repo's default_branch (e.g. "main"). Skip feature branches.
+  const pushedBranch = payload.ref?.replace(/^refs\/heads\//, "");
+  const defaultBranch = payload.repository?.default_branch ?? "main";
+  if (pushedBranch && pushedBranch !== defaultBranch) {
+    return NextResponse.json({ ok: true, skipped: `non_default_branch:${pushedBranch}` });
   }
 
   // Extract head commit metadata for storage alongside AST edges

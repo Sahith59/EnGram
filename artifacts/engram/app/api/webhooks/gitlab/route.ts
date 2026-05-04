@@ -47,8 +47,9 @@ export async function POST(request: NextRequest) {
   }
 
   let payload: {
+    ref?: string;
     checkout_sha?: string;
-    project?: { path_with_namespace?: string };
+    project?: { path_with_namespace?: string; default_branch?: string };
     commits?: Array<{
       id?: string;
       message?: string;
@@ -70,6 +71,13 @@ export async function POST(request: NextRequest) {
 
   if (!repoFullName || !commitSha) {
     return NextResponse.json({ ok: true, skipped: "no_repo_or_commit" });
+  }
+
+  // Only process pushes to the default branch — skip feature branches.
+  const pushedBranch = payload.ref?.replace(/^refs\/heads\//, "");
+  const defaultBranch = payload.project?.default_branch ?? "main";
+  if (pushedBranch && pushedBranch !== defaultBranch) {
+    return NextResponse.json({ ok: true, skipped: `non_default_branch:${pushedBranch}` });
   }
 
   // Collect added/modified files (re-index) and removed files (delete edges)

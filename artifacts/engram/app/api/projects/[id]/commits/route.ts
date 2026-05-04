@@ -215,7 +215,7 @@ export async function GET(
   if (rawCommits.length === 0) {
     return NextResponse.json(
       { commits: [] },
-      { headers: { "Cache-Control": "public, max-age=300" } }
+      { headers: { "Cache-Control": "private, max-age=300" } }
     );
   }
 
@@ -255,6 +255,6 @@ export async function GET(
 
   return NextResponse.json(
     { commits, repo_full_name: repo.repo_full_name, provider },
-    { headers: { "Cache-Control": "public, max-age=300" } }
+    { headers: { "Cache-Control": "private, max-age=300" } }
   );
 }

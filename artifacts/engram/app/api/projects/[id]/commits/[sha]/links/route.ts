@@ -58,21 +58,38 @@ export async function POST(
     .maybeSingle();
   if (!snapshot) return NextResponse.json({ error: "Snapshot not found" }, { status: 404 });
 
-  const { error: insertErr } = await admin
+  // Check if an auto-link already exists — if so, only promote it to manual.
+  // This preserves the computed similarity and linked_files from the auto-linker.
+  const { data: existing } = await admin
     .from("semantic_links")
-    .upsert({
-      repo_id:        project.github_repo_id,
-      commit_sha:     params.sha,
-      snapshot_id:    body.snapshot_id,
-      similarity:     1.0,
-      linked_files:   [],
-      commit_message: body.commit_message ?? null,
-      committed_at:   body.committed_at ?? null,
-      is_manual:      true,
-    }, { onConflict: "commit_sha,snapshot_id" });
+    .select("id")
+    .eq("repo_id", project.github_repo_id)
+    .eq("commit_sha", params.sha)
+    .eq("snapshot_id", body.snapshot_id)
+    .maybeSingle();
 
-  if (insertErr) {
-    return NextResponse.json({ error: insertErr.message }, { status: 500 });
+  if (existing) {
+    // Row exists (auto-link) — just mark it as also manually confirmed
+    const { error: updateErr } = await admin
+      .from("semantic_links")
+      .update({ is_manual: true })
+      .eq("id", existing.id);
+    if (updateErr) return NextResponse.json({ error: updateErr.message }, { status: 500 });
+  } else {
+    // No existing link — insert a fresh manual link
+    const { error: insertErr } = await admin
+      .from("semantic_links")
+      .insert({
+        repo_id:        project.github_repo_id,
+        commit_sha:     params.sha,
+        snapshot_id:    body.snapshot_id,
+        similarity:     1.0,
+        linked_files:   [],
+        commit_message: body.commit_message ?? null,
+        committed_at:   body.committed_at ?? null,
+        is_manual:      true,
+      });
+    if (insertErr) return NextResponse.json({ error: insertErr.message }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });
