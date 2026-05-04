@@ -6,15 +6,17 @@
 
 -- AST dependency graph edges
 create table if not exists public.code_ast_edges (
-  id           uuid primary key default uuid_generate_v4(),
-  repo_id      uuid not null references public.github_repos(id) on delete cascade,
-  source_file  text not null,
-  target_file  text not null,
-  edge_type    text not null check (edge_type in ('import', 'call', 'inherit', 'implement')),
-  symbol_name  text,
-  language     text,
-  commit_sha   text,
-  indexed_at   timestamptz not null default now()
+  id               uuid primary key default uuid_generate_v4(),
+  repo_id          uuid not null references public.github_repos(id) on delete cascade,
+  source_file      text not null,
+  target_file      text not null,
+  edge_type        text not null check (edge_type in ('import', 'call', 'inherit', 'implement')),
+  symbol_name      text,
+  language         text,
+  commit_sha       text,
+  commit_message   text,    -- first line of the commit message that introduced this edge
+  commit_timestamp timestamptz, -- when the commit was authored
+  indexed_at       timestamptz not null default now()
 );
 
 -- Indexes for traversal queries (both directions)

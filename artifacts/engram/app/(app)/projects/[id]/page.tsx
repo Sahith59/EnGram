@@ -226,7 +226,9 @@ export default function ProjectWorkspacePage() {
                           <GitCommit className="h-3 w-3" />AST @ {repo.last_indexed_commit.slice(0, 7)}
                         </span>
                       ) : (
-                        <span className="flex items-center gap-1"><GitCommit className="h-3 w-3 text-engram-light/70" />commits indexed</span>
+                        <span className="flex items-center gap-1 text-yellow-400/70" title="First AST indexing in progress — push a commit to trigger">
+                          <Loader2 className="h-3 w-3 animate-spin" />Indexing…
+                        </span>
                       )}
                     </>
                   )}
@@ -330,6 +332,7 @@ export default function ProjectWorkspacePage() {
               <MembersTab
                 projectId={projectId} members={members}
                 isOwner={project.is_owner} onRefresh={load}
+                repo={project.repo}
               />
             </motion.div>
           )}
@@ -1084,8 +1087,9 @@ function SourcesList({ sources }: { sources: AskSource[] }) {
 /* ══════════════════════════════════════════════════════════
    MEMBERS TAB — manage project members
 ══════════════════════════════════════════════════════════ */
-function MembersTab({ projectId, members, isOwner, onRefresh }: {
+function MembersTab({ projectId, members, isOwner, onRefresh, repo }: {
   projectId: string; members: Member[]; isOwner: boolean; onRefresh: () => void;
+  repo: Repo | null;
 }) {
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [inviteLoading, setInviteLoading] = useState(false);
@@ -1126,9 +1130,72 @@ function MembersTab({ projectId, members, isOwner, onRefresh }: {
   }
 
   return (
-    <div className="max-w-2xl">
+    <div className="max-w-2xl space-y-6">
+      {/* ── Code Repository Section ── */}
+      <div className="p-5 rounded-lg border border-gh-border bg-gh-canvas">
+        <div className="flex items-center gap-2 mb-3">
+          <Github className="h-4 w-4 text-engram-light" />
+          <h3 className="text-sm font-semibold text-gh-text">Code Repository</h3>
+        </div>
+        {repo ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <a
+                  href={`https://github.com/${repo.repo_full_name}`}
+                  target="_blank"
+                  rel="noopener"
+                  className="flex items-center gap-1.5 text-sm text-gh-text hover:text-engram-light transition-colors font-medium"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  {repo.repo_full_name}
+                </a>
+                <div className="flex items-center gap-3 mt-1 text-xs text-gh-muted">
+                  <span className="flex items-center gap-1">
+                    <GitBranch className="h-3 w-3" />{repo.default_branch ?? "main"}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <BookOpen className="h-3 w-3" />{repo.file_count.toLocaleString()} files
+                  </span>
+                  {repo.is_private && (
+                    <span className="flex items-center gap-1"><Lock className="h-3 w-3" />Private</span>
+                  )}
+                </div>
+              </div>
+              <div className="text-right">
+                {repo.last_indexed_commit ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-green-500/10 border border-green-500/20 text-green-400 text-xs">
+                    <GitCommit className="h-3 w-3" />
+                    AST @ {repo.last_indexed_commit.slice(0, 7)}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Awaiting first push
+                  </span>
+                )}
+                {repo.indexed_at && (
+                  <div className="text-[10px] text-gh-muted mt-1">
+                    Indexed {new Date(repo.indexed_at).toLocaleDateString()}
+                  </div>
+                )}
+              </div>
+            </div>
+            {!repo.last_indexed_commit && (
+              <div className="text-xs text-gh-muted bg-gh-bg border border-gh-border rounded-md px-3 py-2">
+                AST indexing starts automatically on the next push event. Connect a webhook in your GitHub App settings to enable this.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="text-xs text-gh-muted">
+            No code repository linked to this project yet. Add a GitHub repository in the project settings to enable codebase search and AST analysis.
+          </div>
+        )}
+      </div>
+
       {isOwner && (
-        <div className="mb-8 p-5 rounded-lg border border-gh-border bg-gh-canvas">
+        <div className="p-5 rounded-lg border border-gh-border bg-gh-canvas">
           <div className="flex items-center gap-2 mb-3">
             <UserPlus className="h-4 w-4 text-engram-light" />
             <h3 className="text-sm font-semibold text-gh-text">Invite to this project</h3>

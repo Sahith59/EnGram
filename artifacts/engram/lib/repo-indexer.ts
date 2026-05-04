@@ -254,6 +254,8 @@ export interface RepoIndexEvent {
   repoFullName: string;
   provider: "github" | "gitlab";
   commitSha: string;
+  commitMessage?: string;   // first line of the triggering commit message
+  commitTimestamp?: string; // ISO timestamp of the commit author date
   changedFiles: string[];
 }
 
@@ -261,7 +263,7 @@ export async function indexChangedFiles(event: RepoIndexEvent): Promise<{
   edgesAdded: number;
   filesProcessed: number;
 }> {
-  const { repoId, teamId, repoFullName, provider, commitSha, changedFiles } = event;
+  const { repoId, teamId, repoFullName, provider, commitSha, commitMessage, commitTimestamp, changedFiles } = event;
   const admin = createAdminClient();
 
   const token = await getOAuthToken(teamId, provider);
@@ -300,6 +302,8 @@ export async function indexChangedFiles(event: RepoIndexEvent): Promise<{
           symbol_name: e.symbol_name,
           language: e.language,
           commit_sha: commitSha,
+          commit_message: commitMessage ?? null,
+          commit_timestamp: commitTimestamp ?? null,
         }));
         await admin.from("code_ast_edges").insert(rows);
         edgesAdded += rows.length;

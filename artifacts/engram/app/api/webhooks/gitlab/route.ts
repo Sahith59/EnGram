@@ -6,18 +6,36 @@
  *   URL: https://<your-app>/api/webhooks/gitlab
  *   Secret token: value of GITLAB_WEBHOOK_TOKEN env var
  *   Trigger: Push events
+ *
+ * Security: GITLAB_WEBHOOK_TOKEN is REQUIRED in non-development environments.
+ * Requests with an invalid or missing token are rejected with 401.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { indexChangedFiles } from "@/lib/repo-indexer";
 
-export async function POST(request: NextRequest) {
-  const token = request.headers.get("x-gitlab-token");
+function verifyGitLabToken(token: string | null): boolean {
   const expectedToken = process.env.GITLAB_WEBHOOK_TOKEN;
 
-  if (expectedToken && token !== expectedToken) {
-    return NextResponse.json({ error: "Invalid token" }, { status: 401 });
+  if (!expectedToken) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[webhook/gitlab] GITLAB_WEBHOOK_TOKEN not set — skipping token check (dev only)");
+      return true;
+    }
+    // Production/staging: reject unauthenticated requests
+    console.error("[webhook/gitlab] GITLAB_WEBHOOK_TOKEN is not configured — rejecting request");
+    return false;
+  }
+
+  return token === expectedToken;
+}
+
+export async function POST(request: NextRequest) {
+  const token = request.headers.get("x-gitlab-token");
+
+  if (!verifyGitLabToken(token)) {
+    return NextResponse.json({ error: "Invalid or missing webhook token" }, { status: 401 });
   }
 
   const event = request.headers.get("x-gitlab-event");
@@ -30,6 +48,8 @@ export async function POST(request: NextRequest) {
     project?: { path_with_namespace?: string };
     commits?: Array<{
       id?: string;
+      message?: string;
+      timestamp?: string;
       added?: string[];
       modified?: string[];
       removed?: string[];
@@ -49,8 +69,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, skipped: "no_repo_or_commit" });
   }
 
+  // Extract changed files and capture head commit metadata
   const changedFiles = new Set<string>();
+  let commitMessage: string | undefined;
+  let commitTimestamp: string | undefined;
+
   for (const commit of payload.commits ?? []) {
+    if (!commitMessage && commit.message) {
+      // Use the first (most recent) commit's message and timestamp for metadata
+      commitMessage = commit.message.split("\n")[0].slice(0, 500);
+      commitTimestamp = commit.timestamp;
+    }
     for (const f of [...(commit.added ?? []), ...(commit.modified ?? [])]) {
       changedFiles.add(f);
     }
@@ -77,6 +106,8 @@ export async function POST(request: NextRequest) {
     repoFullName,
     provider: "gitlab",
     commitSha,
+    commitMessage,
+    commitTimestamp,
     changedFiles: Array.from(changedFiles),
   }).catch((err) => console.error("[webhook/gitlab] indexing error:", err));
 

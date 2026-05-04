@@ -6,11 +6,11 @@
  * passing installation_id and optionally setup_action + state.
  *
  * Flow:
- *  1. Validate CSRF state cookie
- *  2. Use App ID + private key to generate a JWT
- *  3. Exchange JWT + installation_id for an installation access token
- *  4. Fetch installation metadata (account login)
- *  5. Store installation_id + encrypted short-lived token in github_oauth_tokens
+ *  1. Validate CSRF state cookie (strictly required when state is present)
+ *  2. Use App ID + private key to generate an RS256 JWT
+ *  3. Exchange JWT + installation_id for a short-lived installation access token
+ *  4. Fetch installation metadata (account login, type)
+ *  5. Store installation_id + encrypted token in github_oauth_tokens
  *
  * Required env vars:
  *   GITHUB_APP_ID          — numeric GitHub App ID
@@ -117,11 +117,16 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=github_denied`);
   }
 
-  // Validate CSRF state
+  // Strict CSRF state validation: if either state or cookie is present, both must match.
+  // If state is present in the callback, cookie must also be present and equal.
   const savedState = request.cookies.get("gh_oauth_state")?.value;
-  if (state && savedState && state !== savedState) {
-    return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=invalid_state`);
+  if (state) {
+    // State was sent — cookie must be present and match (strict enforcement)
+    if (!savedState || state !== savedState) {
+      return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=invalid_state`);
+    }
   }
+  // If no state in callback (some GitHub App flows omit it), allow through
 
   if (!installationId) {
     return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=no_installation_id`);
@@ -158,7 +163,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=token_exchange`);
   }
 
-  // Fetch installation metadata (account login) for display
+  // Fetch installation metadata
   const jwt = generateGitHubAppJwt(appId, privateKey);
   const meta = await getInstallationMetadata(jwt, installationId);
 

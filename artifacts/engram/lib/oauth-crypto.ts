@@ -1,30 +1,59 @@
 /**
  * oauth-crypto.ts — AES-256-GCM encryption for OAuth tokens.
  *
- * Uses OAUTH_TOKEN_ENCRYPTION_KEY env var (32 hex chars = 16 bytes).
- * Falls back to a deterministic key derived from SUPABASE_SERVICE_ROLE_KEY
- * when the dedicated env var is not set.
+ * Uses OAUTH_TOKEN_ENCRYPTION_KEY env var (32 hex chars = 16 bytes, or 64 = 32 bytes).
+ * Falls back to HKDF key derivation from SUPABASE_SERVICE_ROLE_KEY when the dedicated
+ * env var is not set. Never uses a static/hardcoded dev fallback in production.
  *
  * Format: "iv_hex:authTag_hex:ciphertext_hex"
  */
 
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  hkdfSync,
+  randomBytes,
+} from "crypto";
 
 const ALGO = "aes-256-gcm";
 
+// HKDF info string — change this to invalidate all derived keys (rotate tokens)
+const HKDF_INFO = "engram-oauth-token-encryption-v1";
+const HKDF_SALT = Buffer.from("engram-oauth-salt-v1", "utf8");
+
 function getKey(): Buffer {
   const explicit = process.env.OAUTH_TOKEN_ENCRYPTION_KEY;
-  if (explicit && explicit.length >= 32) {
-    return Buffer.from(explicit.slice(0, 64), "hex").subarray(0, 32);
+  if (explicit && explicit.length >= 64) {
+    // Explicit 32-byte hex key (preferred)
+    return Buffer.from(explicit.slice(0, 64), "hex");
   }
-  // Derive from service role key — not ideal but acceptable fallback
-  const seed = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "engram-dev-fallback-key-do-not-use";
-  return createHash("sha256").update(seed).digest();
+  if (explicit && explicit.length >= 32) {
+    // 16-byte hex key — expand via HKDF to 32 bytes
+    const raw = Buffer.from(explicit.slice(0, 32), "hex");
+    return Buffer.from(hkdfSync("sha256", raw, HKDF_SALT, HKDF_INFO, 32));
+  }
+
+  // Derive key from SUPABASE_SERVICE_ROLE_KEY via HKDF (RFC 5869).
+  // SHA-256 HKDF provides proper key separation and is significantly
+  // stronger than a raw SHA-256 hash of the seed material.
+  const seed = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!seed) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "OAUTH_TOKEN_ENCRYPTION_KEY or SUPABASE_SERVICE_ROLE_KEY must be set in production"
+      );
+    }
+    // Development only — use a deterministic but labeled dev key
+    const devSeed = Buffer.from("engram-dev-only-do-not-use-in-production", "utf8");
+    return Buffer.from(hkdfSync("sha256", devSeed, HKDF_SALT, HKDF_INFO, 32));
+  }
+
+  return Buffer.from(hkdfSync("sha256", seed, HKDF_SALT, HKDF_INFO, 32));
 }
 
 export function encryptToken(plaintext: string): string {
   const key = getKey();
-  const iv = randomBytes(12); // 96-bit IV for GCM
+  const iv = randomBytes(12); // 96-bit IV for GCM (recommended)
   const cipher = createCipheriv(ALGO, key, iv);
   const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
@@ -43,5 +72,7 @@ export function decryptToken(ciphertext: string): string {
 }
 
 export function isEncrypted(value: string): boolean {
-  return value.split(":").length === 3;
+  const parts = value.split(":");
+  // All three parts must be valid hex strings
+  return parts.length === 3 && parts.every((p) => /^[0-9a-f]+$/i.test(p));
 }

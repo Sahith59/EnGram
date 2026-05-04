@@ -1,6 +1,12 @@
 /**
  * GET /api/oauth/status
  * Returns OAuth connection status for GitHub and GitLab.
+ *
+ * `has_github_app` is true when the GitHub App env vars are configured
+ * (GITHUB_APP_ID + GITHUB_APP_NAME + GITHUB_APP_PRIVATE_KEY).
+ *
+ * `has_gitlab_app` is true when GitLab OAuth env vars are set
+ * (GITLAB_CLIENT_ID + GITLAB_CLIENT_SECRET).
  */
 
 import { NextResponse } from "next/server";
@@ -22,13 +28,13 @@ export async function GET() {
   const admin = createAdminClient();
   const { data: tokens } = await admin
     .from("github_oauth_tokens")
-    .select("provider, provider_login, token_scope, created_at")
+    .select("provider, provider_login, token_scope, installation_id, created_at")
     .eq("team_id", profile.team_id);
 
   const github = tokens?.find((t) => t.provider === "github");
   const gitlab = tokens?.find((t) => t.provider === "gitlab");
 
-  // Also check legacy PAT
+  // Also check legacy PAT for GitHub
   const { data: legacyIntegration } = await admin
     .from("integrations")
     .select("config")
@@ -39,15 +45,26 @@ export async function GET() {
 
   return NextResponse.json({
     github: github
-      ? { connected: true, login: github.provider_login, via: "oauth" }
+      ? {
+          connected: true,
+          login: github.provider_login,
+          via: github.installation_id ? "github_app" : "oauth",
+          installation_id: github.installation_id ?? null,
+        }
       : legacyConfig?.pat
         ? { connected: true, login: legacyConfig.github_login ?? null, via: "pat" }
         : { connected: false },
     gitlab: gitlab
       ? { connected: true, login: gitlab.provider_login, via: "oauth" }
       : { connected: false },
-    has_github_app: !!process.env.GITHUB_CLIENT_ID,
-    has_gitlab_app: !!process.env.GITLAB_CLIENT_ID,
+    // GitHub App: requires all three env vars to be set
+    has_github_app: !!(
+      process.env.GITHUB_APP_ID &&
+      process.env.GITHUB_APP_NAME &&
+      process.env.GITHUB_APP_PRIVATE_KEY
+    ),
+    // GitLab OAuth: requires client ID + secret
+    has_gitlab_app: !!(process.env.GITLAB_CLIENT_ID && process.env.GITLAB_CLIENT_SECRET),
   });
 }
 

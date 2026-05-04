@@ -2,15 +2,14 @@
  * POST /api/webhooks/github
  * Receives GitHub push events and triggers incremental AST re-indexing.
  *
- * Setup: In your GitHub repo → Settings → Webhooks → Add webhook
+ * Setup: In your GitHub App → Webhooks → Add webhook
  *   Payload URL: https://<your-app>/api/webhooks/github
  *   Content type: application/json
  *   Secret: value of GITHUB_WEBHOOK_SECRET env var
  *   Events: Just the push event
  *
- * Security: signature verification is REQUIRED in production.
- * GITHUB_WEBHOOK_SECRET must be set; requests without a valid
- * X-Hub-Signature-256 header are rejected with 401.
+ * Security: GITHUB_WEBHOOK_SECRET is REQUIRED in non-development environments.
+ * Requests without a valid X-Hub-Signature-256 HMAC are rejected with 401.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -21,14 +20,11 @@ import { createHmac, timingSafeEqual } from "crypto";
 function verifyGitHubSignature(body: string, signature: string | null): boolean {
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
 
-  // In development without a configured secret, allow but log a warning.
-  // In all other environments the secret is mandatory.
   if (!secret) {
     if (process.env.NODE_ENV === "development") {
       console.warn("[webhook/github] GITHUB_WEBHOOK_SECRET not set — skipping signature check (dev only)");
       return true;
     }
-    // Production/staging: reject unsigned requests
     console.error("[webhook/github] GITHUB_WEBHOOK_SECRET is not configured — rejecting request");
     return false;
   }
@@ -37,7 +33,6 @@ function verifyGitHubSignature(body: string, signature: string | null): boolean 
 
   const expected = "sha256=" + createHmac("sha256", secret).update(body).digest("hex");
   try {
-    // Constant-time comparison to prevent timing attacks
     const sigBuf = Buffer.from(signature.padEnd(expected.length));
     const expBuf = Buffer.from(expected);
     if (sigBuf.length !== expBuf.length) return false;
@@ -64,8 +59,11 @@ export async function POST(request: NextRequest) {
     ref?: string;
     after?: string;
     repository?: { full_name?: string };
+    head_commit?: { message?: string; timestamp?: string };
     commits?: Array<{
       id?: string;
+      message?: string;
+      timestamp?: string;
       added?: string[];
       modified?: string[];
       removed?: string[];
@@ -85,6 +83,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, skipped: "no_repo_or_delete_event" });
   }
 
+  // Extract head commit metadata for storage alongside AST edges
+  const commitMessage = payload.head_commit?.message
+    ? payload.head_commit.message.split("\n")[0].slice(0, 500)
+    : payload.commits?.[0]?.message?.split("\n")[0].slice(0, 500);
+  const commitTimestamp = payload.head_commit?.timestamp ?? payload.commits?.[0]?.timestamp;
+
   // Collect all changed files from all commits in the push
   const changedFiles = new Set<string>();
   for (const commit of payload.commits ?? []) {
@@ -97,7 +101,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, skipped: "no_changed_files" });
   }
 
-  // Find the indexed repo record
   const admin = createAdminClient();
   const { data: repo } = await admin
     .from("github_repos")
@@ -109,13 +112,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, skipped: "repo_not_indexed" });
   }
 
-  // Run indexing in background (don't block the webhook response)
+  // Run indexing in background (non-blocking — webhook must respond in < 10s)
   indexChangedFiles({
     repoId: repo.id,
     teamId: repo.team_id,
     repoFullName,
     provider: "github",
     commitSha,
+    commitMessage,
+    commitTimestamp,
     changedFiles: Array.from(changedFiles),
   }).catch((err) => console.error("[webhook/github] indexing error:", err));
 
