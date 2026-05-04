@@ -58,3 +58,8 @@ externalPort = 3001
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+NEXT_PUBLIC_APP_URL = "https://35cc1161-d3be-4571-ba44-45b2cbf37965-00-1d7y2w5ur2vjj.spock.replit.dev"
