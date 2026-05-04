@@ -231,8 +231,8 @@ export default function ProjectWorkspacePage() {
                           <GitCommit className="h-3 w-3" />AST @ {repo.last_indexed_commit.slice(0, 7)}
                         </span>
                       ) : (
-                        <span className="flex items-center gap-1 text-yellow-400/70" title="First AST indexing in progress — push a commit to trigger">
-                          <Loader2 className="h-3 w-3 animate-spin" />Indexing…
+                        <span className="flex items-center gap-1 text-yellow-400/70" title="Push a commit to main to trigger AST indexing">
+                          <Loader2 className="h-3 w-3" />Awaiting push
                         </span>
                       )}
                     </>
@@ -1827,6 +1827,21 @@ function MembersTab({ projectId, members, isOwner, onRefresh, repo }: {
   const [copied, setCopied] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [reindexing, setReindexing] = useState(false);
+  const [reindexMsg, setReindexMsg] = useState<string | null>(null);
+
+  async function triggerAstReindex() {
+    setReindexing(true);
+    setReindexMsg(null);
+    try {
+      const r = await fetch(`/api/projects/${projectId}/ast-reindex`, { method: "POST" });
+      const d = await r.json() as { ok?: boolean; message?: string; error?: string };
+      setReindexMsg(d.ok ? (d.message ?? "Indexing started") : (d.error ?? "Failed"));
+      if (d.ok) setTimeout(() => { setReindexMsg(null); onRefresh(); }, 8000);
+    } finally {
+      setReindexing(false);
+    }
+  }
 
   async function disconnectRepo() {
     if (!confirm("Disconnect this repository? The project will lose access to code search and AST analysis until a new repo is linked.")) return;
@@ -1937,19 +1952,45 @@ function MembersTab({ projectId, members, isOwner, onRefresh, repo }: {
               </div>
             </div>
 
-            {/* ── First-index notice ── */}
-            {!repo.last_indexed_commit && (
-              <div className="text-xs text-gh-muted bg-gh-bg border border-gh-border rounded-md px-3 py-2">
-                AST indexing starts automatically on the next push to <span className="font-mono">{repo.default_branch ?? "main"}</span>.{" "}
-                {repo.provider === "gitlab"
-                  ? "Ensure a webhook is configured in your GitLab project settings."
-                  : "Ensure a webhook is configured in your GitHub App installation."}
+            {/* ── First-index notice + manual trigger ── */}
+            {!repo.last_indexed_commit && isOwner && (
+              <div className="space-y-2">
+                <div className="text-xs text-gh-muted bg-gh-bg border border-gh-border rounded-md px-3 py-2">
+                  AST indexing starts automatically on the next push to <span className="font-mono">{repo.default_branch ?? "main"}</span>.
+                  You can also trigger it manually now.
+                </div>
+                {reindexMsg && (
+                  <div className="text-xs text-engram-light bg-engram-light/5 border border-engram-light/20 rounded-md px-3 py-2">
+                    {reindexMsg}
+                  </div>
+                )}
+                <button
+                  onClick={triggerAstReindex}
+                  disabled={reindexing}
+                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-engram-light/30 text-engram-light hover:bg-engram-light/10 transition-colors disabled:opacity-50">
+                  {reindexing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                  {reindexing ? "Indexing…" : "Trigger AST indexing now"}
+                </button>
+              </div>
+            )}
+            {repo.last_indexed_commit && reindexMsg && (
+              <div className="text-xs text-engram-light bg-engram-light/5 border border-engram-light/20 rounded-md px-3 py-2">
+                {reindexMsg}
               </div>
             )}
 
             {/* ── Owner controls ── */}
             {isOwner && (
-              <div className="flex justify-end pt-1 border-t border-gh-border/50">
+              <div className="flex justify-end gap-2 pt-1 border-t border-gh-border/50">
+                {repo.last_indexed_commit && (
+                  <button
+                    onClick={triggerAstReindex}
+                    disabled={reindexing}
+                    className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-gh-border text-gh-muted hover:text-gh-text hover:border-gh-text/30 transition-colors disabled:opacity-50">
+                    {reindexing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                    Re-index AST
+                  </button>
+                )}
                 <button
                   onClick={disconnectRepo}
                   disabled={disconnecting}

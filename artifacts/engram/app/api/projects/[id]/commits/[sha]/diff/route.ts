@@ -53,11 +53,21 @@ async function getGitHubToken(admin: ReturnType<typeof createAdminClient>, teamI
   }
   const { data: tokenRow } = await admin.from("github_oauth_tokens").select("access_token_enc")
     .eq("team_id", teamId).eq("provider", "github").maybeSingle();
-  if (!tokenRow?.access_token_enc) return null;
-  try {
-    const raw = tokenRow.access_token_enc;
-    return isEncrypted(raw) ? await decryptToken(raw) : raw;
-  } catch { return null; }
+  if (tokenRow?.access_token_enc) {
+    try {
+      const raw = tokenRow.access_token_enc;
+      if (raw) return isEncrypted(raw) ? await decryptToken(raw) : raw;
+    } catch { /* fall through */ }
+  }
+  // Fallback: legacy PAT stored in integrations table
+  const { data: integration } = await admin
+    .from("integrations")
+    .select("config")
+    .eq("team_id", teamId)
+    .eq("type", "github")
+    .maybeSingle();
+  const pat = (integration?.config as { pat?: string } | null)?.pat;
+  return pat ?? null;
 }
 
 async function getGitLabToken(admin: ReturnType<typeof createAdminClient>, teamId: string): Promise<string | null> {
