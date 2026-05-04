@@ -1,9 +1,16 @@
 /**
- * ast-traverser.ts — Blast Radius Engine Phase C
+ * ast-traverser.ts — Blast Radius Engine
  *
  * Given a (repo_id, file_path), uses the `traverse_ast_edges` recursive CTE
- * to find every file that transitively depends on the target file.
- * Classifies each as Direct (1 hop), Transitive (2 hops), or Indirect (3+).
+ * to perform a bidirectional BFS over the AST dependency graph:
+ *
+ *   reverse: files that depend on the target (will break if it changes)
+ *   forward: files the target depends on (its own dependencies — context)
+ *
+ * Impact classification by hop distance:
+ *   1 hop  → Direct
+ *   2 hops → Transitive
+ *   3+ hops → Indirect
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -11,6 +18,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 const MAX_DEPTH = 5;
 
 export type ImpactLevel = "Direct" | "Transitive" | "Indirect";
+export type TraversalDirection = "reverse" | "forward";
 
 export interface AffectedFile {
   file_path: string;
@@ -19,14 +27,16 @@ export interface AffectedFile {
   edge_type: string;
   via_file: string;
   via_symbol: string | null;
+  direction: TraversalDirection;
 }
 
 interface RpcRow {
-  file_path: string;
-  hops: number;
-  edge_type: string;
-  via_file: string;
+  file_path:  string;
+  hops:       number;
+  edge_type:  string;
+  via_file:   string;
   via_symbol: string | null;
+  direction:  string;
 }
 
 function hopToImpact(hops: number): ImpactLevel {
@@ -36,14 +46,15 @@ function hopToImpact(hops: number): ImpactLevel {
 }
 
 /**
- * Traverse the dependency graph to find all files affected by changing
- * `startFile` in `repoId`. Uses server-side recursive CTE for efficiency.
+ * Traverse the dependency graph bidirectionally to find all files affected by
+ * changing `startFile` in `repoId`.
  *
- * Returns affected files sorted by hops ascending (closest first),
- * capped at MAX_DEPTH. Does not include the start file itself.
+ * Returns:
+ *   - files: AffectedFile[] sorted by direction (reverse first), then hops, then alpha
+ *   - edgesTraversed: total rows returned by the RPC
  */
 export async function traverseAstEdges(opts: {
-  repoId: string;
+  repoId:    string;
   startFile: string;
 }): Promise<{ files: AffectedFile[]; edgesTraversed: number }> {
   const { repoId, startFile } = opts;
@@ -69,10 +80,15 @@ export async function traverseAstEdges(opts: {
     edge_type:    row.edge_type,
     via_file:     row.via_file,
     via_symbol:   row.via_symbol ?? null,
+    direction:    (row.direction === "forward" ? "forward" : "reverse") as TraversalDirection,
   }));
 
-  // Sort by hops, then alphabetically
-  files.sort((a, b) => a.hops - b.hops || a.file_path.localeCompare(b.file_path));
+  // Sort: reverse first (dependents = primary blast), then forward (dependencies = context)
+  // Within each direction: hops ascending, then alphabetical
+  files.sort((a, b) => {
+    if (a.direction !== b.direction) return a.direction === "reverse" ? -1 : 1;
+    return a.hops - b.hops || a.file_path.localeCompare(b.file_path);
+  });
 
   return { files, edgesTraversed: rows.length };
 }

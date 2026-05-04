@@ -1892,6 +1892,7 @@ interface BlastFile {
   edge_type: string;
   via_file: string;
   via_symbol: string | null;
+  direction: "reverse" | "forward";
 }
 
 interface BlastSnapshot {
@@ -1922,6 +1923,7 @@ interface PastQuery {
   id: string;
   query_file: string;
   change_description: string;
+  analysis_name: string | null;
   risk_level: string | null;
   risk_summary: string | null;
   ast_edges_traversed: number;
@@ -1949,6 +1951,7 @@ const IMPACT_COLORS: Record<string, string> = {
 function BlastRadiusTab({ projectId }: { projectId: string }) {
   const [filePath, setFilePath] = useState("");
   const [changeDesc, setChangeDesc] = useState("");
+  const [analysisName, setAnalysisName] = useState("");
   const [fileOptions, setFileOptions] = useState<string[]>([]);
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [phase, setPhase] = useState<BlastPhase>("idle");
@@ -2009,7 +2012,11 @@ function BlastRadiusTab({ projectId }: { projectId: string }) {
       const response = await fetch(`/api/projects/${projectId}/blast-radius`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ file_path: filePath.trim(), change_description: changeDesc.trim() }),
+        body: JSON.stringify({
+          file_path:         filePath.trim(),
+          change_description: changeDesc.trim(),
+          analysis_name:     analysisName.trim() || undefined,
+        }),
       });
 
       if (!response.ok || !response.body) {
@@ -2172,6 +2179,20 @@ function BlastRadiusTab({ projectId }: { projectId: string }) {
           />
         </div>
 
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-gh-muted uppercase tracking-wider">
+            Analysis name <span className="normal-case text-gh-muted/60">(optional)</span>
+          </label>
+          <input
+            type="text"
+            value={analysisName}
+            onChange={(e) => setAnalysisName(e.target.value)}
+            placeholder="e.g. JWT expiry change — pre-release review"
+            className="w-full px-3 py-2 rounded-md border border-gh-border bg-gh-bg text-sm text-gh-text placeholder:text-gh-muted/50 focus:outline-none focus:ring-1 focus:ring-engram/50"
+            disabled={isRunning}
+          />
+        </div>
+
         <button
           onClick={runAnalysis}
           disabled={isRunning || !filePath.trim() || !changeDesc.trim()}
@@ -2224,44 +2245,69 @@ function BlastRadiusTab({ projectId }: { projectId: string }) {
       {/* ── Results ───────────────────────────────────────── */}
       {(affectedFiles.length > 0 || intentSnapshots.length > 0 || streamText || result) && (
         <div className="space-y-4">
-          {/* Affected Files */}
-          {affectedFiles.length > 0 && (
-            <div className="rounded-lg border border-gh-border bg-gh-canvas overflow-hidden">
-              <div className="px-4 py-3 border-b border-gh-border flex items-center justify-between">
-                <div className="flex items-center gap-2">
+          {/* Affected Files — bidirectional */}
+          {affectedFiles.length > 0 && (() => {
+            const reverseFiles = affectedFiles.filter((f) => f.direction === "reverse");
+            const forwardFiles = affectedFiles.filter((f) => f.direction === "forward");
+            const renderFileRow = (f: BlastFile) => (
+              <div key={`${f.direction}-${f.file_path}`} className="flex items-center gap-3 px-4 py-2.5">
+                <span className={cn("text-[10px] px-1.5 py-0.5 rounded border shrink-0", IMPACT_COLORS[f.impact_level])}>
+                  {f.impact_level}
+                </span>
+                <code className="text-xs text-gh-text flex-1 min-w-0 truncate">{f.file_path}</code>
+                <span className="text-[10px] text-gh-muted shrink-0 hidden sm:block">
+                  via <code className="text-engram-light">{f.via_file.split("/").pop()}</code>
+                  {f.via_symbol ? ` · ${f.via_symbol}` : ""}
+                </span>
+                <span className="text-[10px] text-gh-muted shrink-0">{f.hops}h</span>
+              </div>
+            );
+            return (
+              <div className="rounded-lg border border-gh-border bg-gh-canvas overflow-hidden">
+                <div className="px-4 py-3 border-b border-gh-border flex items-center gap-2">
                   <AlertTriangle className="h-4 w-4 text-orange-400" />
                   <span className="text-sm font-medium text-gh-text">Affected Files</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-orange-400/10 border border-orange-400/25 text-orange-400">
                     {affectedFiles.length} file{affectedFiles.length !== 1 ? "s" : ""}
                   </span>
                 </div>
-              </div>
-              <div className="divide-y divide-gh-border">
-                {affectedFiles.slice(0, 30).map((f) => (
-                  <div key={f.file_path} className="flex items-center gap-3 px-4 py-2.5">
-                    <span className={cn("text-[10px] px-1.5 py-0.5 rounded border shrink-0", IMPACT_COLORS[f.impact_level])}>
-                      {f.impact_level}
-                    </span>
-                    <code className="text-xs text-gh-text flex-1 min-w-0 truncate">{f.file_path}</code>
-                    <span className="text-[10px] text-gh-muted shrink-0 hidden sm:block">
-                      via <code className="text-engram-light">{f.via_file.split("/").pop()}</code>
-                      {f.via_symbol ? ` · ${f.via_symbol}` : ""}
-                    </span>
-                    <span className="text-[10px] text-gh-muted shrink-0">{f.hops}h</span>
-                  </div>
-                ))}
-                {affectedFiles.length > 30 && (
-                  <p className="px-4 py-2 text-xs text-gh-muted">…and {affectedFiles.length - 30} more</p>
+                {/* Reverse: files that depend on (will break) */}
+                {reverseFiles.length > 0 && (
+                  <>
+                    <div className="px-4 py-2 bg-red-400/5 border-b border-gh-border flex items-center gap-1.5">
+                      <span className="text-[10px] font-medium uppercase tracking-wider text-red-400">
+                        Dependents — will break if the interface changes
+                      </span>
+                      <span className="text-[10px] text-red-400/70">({reverseFiles.length})</span>
+                    </div>
+                    <div className="divide-y divide-gh-border">
+                      {reverseFiles.slice(0, 20).map(renderFileRow)}
+                      {reverseFiles.length > 20 && (
+                        <p className="px-4 py-2 text-xs text-gh-muted">…and {reverseFiles.length - 20} more</p>
+                      )}
+                    </div>
+                  </>
+                )}
+                {/* Forward: files this file imports (context) */}
+                {forwardFiles.length > 0 && (
+                  <>
+                    <div className="px-4 py-2 bg-blue-400/5 border-y border-gh-border flex items-center gap-1.5">
+                      <span className="text-[10px] font-medium uppercase tracking-wider text-blue-400">
+                        Dependencies — files this file relies on
+                      </span>
+                      <span className="text-[10px] text-blue-400/70">({forwardFiles.length})</span>
+                    </div>
+                    <div className="divide-y divide-gh-border">
+                      {forwardFiles.slice(0, 20).map(renderFileRow)}
+                      {forwardFiles.length > 20 && (
+                        <p className="px-4 py-2 text-xs text-gh-muted">…and {forwardFiles.length - 20} more</p>
+                      )}
+                    </div>
+                  </>
                 )}
               </div>
-              {affectedFiles.length === 0 && (
-                <div className="flex items-center gap-2 px-4 py-4 text-xs text-gh-muted">
-                  <Info className="h-3.5 w-3.5 shrink-0" />
-                  No AST dependents found for this file. It may not be indexed yet, or the file has no importers.
-                </div>
-              )}
-            </div>
-          )}
+            );
+          })()}
 
           {/* Historical Intent */}
           {(intentSnapshots.length > 0 || phase === "done") && (
@@ -2405,9 +2451,14 @@ function BlastRadiusTab({ projectId }: { projectId: string }) {
                             {q.risk_level}
                           </span>
                         )}
-                        <code className="text-xs text-engram-light truncate">{q.query_file}</code>
+                        {q.analysis_name
+                          ? <span className="text-xs font-medium text-gh-text truncate">{q.analysis_name}</span>
+                          : <code className="text-xs text-engram-light truncate">{q.query_file}</code>}
                       </div>
-                      <p className="text-xs text-gh-muted truncate">{q.change_description}</p>
+                      <p className="text-xs text-gh-muted truncate">
+                        {q.analysis_name && <code className="text-engram-light/70 mr-1">{q.query_file}</code>}
+                        {q.change_description}
+                      </p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="text-[10px] text-gh-muted">

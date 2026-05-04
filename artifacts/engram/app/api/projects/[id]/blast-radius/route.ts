@@ -1,15 +1,16 @@
 /**
  * POST /api/projects/[id]/blast-radius
  *
- * Blast Radius Engine — Phase C.
- * Accepts { file_path, change_description } and returns a streaming SSE
- * response with three phases:
- *   1. `affected_files` — AST traversal result (immediate)
- *   2. `intent_snapshots` — relevant AI conversations (immediate)
- *   3. text chunks — Claude synthesis (streamed)
+ * Blast Radius Engine — streaming SSE endpoint.
+ * Accepts { file_path, change_description, analysis_name? }
+ * and streams three phases:
+ *   1. `affected_files` — bidirectional AST traversal result
+ *   2. `intent_snapshots` — relevant AI conversations
+ *   3. `token` chunks — Claude synthesis (streamed)
  *   4. `result` — structured JSON with risk_level + saved query id
  *
- * Also persists the analysis to `blast_radius_queries` at the end.
+ * A hard 15-second timeout is enforced via AbortController.
+ * If triggered, an `error` event is emitted and the stream is closed.
  *
  * GET /api/projects/[id]/blast-radius
  * Returns the 10 most recent blast radius analyses for this project.
@@ -22,6 +23,8 @@ import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { traverseAstEdges } from "@/lib/blast-radius/ast-traverser";
 import { retrieveIntent } from "@/lib/blast-radius/intent-retriever";
 import { synthesizeBlastRadius } from "@/lib/blast-radius/synthesizer";
+
+const ANALYSIS_TIMEOUT_MS = 15_000;
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
 async function resolveUserAndProject(
@@ -68,14 +71,14 @@ export async function POST(
   const ctx = await resolveUserAndProject(params.id);
   if (!ctx) return NextResponse.json({ error: "Unauthorized or no repo" }, { status: 401 });
 
-  let body: { file_path: string; change_description: string };
+  let body: { file_path: string; change_description: string; analysis_name?: string };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { file_path, change_description } = body;
+  const { file_path, change_description, analysis_name } = body;
   if (!file_path?.trim() || !change_description?.trim()) {
     return NextResponse.json(
       { error: "file_path and change_description are required" },
@@ -83,9 +86,15 @@ export async function POST(
     );
   }
 
-  const admin = createAdminClient();
-
+  const admin   = createAdminClient();
   const encoder = new TextEncoder();
+
+  // ── 15-second hard timeout ─────────────────────────────────────────────────
+  const ac        = new AbortController();
+  const timeoutId = setTimeout(
+    () => ac.abort(new Error("Analysis timed out after 15 seconds")),
+    ANALYSIS_TIMEOUT_MS
+  );
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -93,20 +102,28 @@ export async function POST(
         controller.enqueue(encoder.encode(sseEvent(event, data)));
       }
 
+      // If timeout fires while we're still running, emit error and close
+      ac.signal.addEventListener("abort", () => {
+        send("error", { message: "Analysis timed out — the codebase may be too large. Try a more specific file path." });
+        controller.close();
+      }, { once: true });
+
       try {
-        // ── Phase 1: AST traversal ───────────────────────────────────────────
+        // ── Phase 1: AST traversal ─────────────────────────────────────────
         const { files: affectedFiles, edgesTraversed } = await traverseAstEdges({
-          repoId: ctx.repoId,
+          repoId:    ctx.repoId,
           startFile: file_path.trim(),
         });
 
+        if (ac.signal.aborted) return;
+
         send("affected_files", {
-          files: affectedFiles,
+          files:          affectedFiles,
           edges_traversed: edgesTraversed,
-          file_path: file_path.trim(),
+          file_path:       file_path.trim(),
         });
 
-        // ── Phase 2: Intent retrieval ────────────────────────────────────────
+        // ── Phase 2: Intent retrieval ──────────────────────────────────────
         const { snapshots: intentSnapshots, linksFound } = await retrieveIntent({
           repoId:            ctx.repoId,
           projectId:         params.id,
@@ -116,14 +133,16 @@ export async function POST(
           changeDescription: change_description.trim(),
         });
 
+        if (ac.signal.aborted) return;
+
         send("intent_snapshots", {
-          snapshots: intentSnapshots,
+          snapshots:   intentSnapshots,
           links_found: linksFound,
         });
 
-        // ── Phase 3: Claude synthesis (streamed) ─────────────────────────────
-        let riskLevel: string = "Medium";
-        let riskSummary = "";
+        // ── Phase 3: Claude synthesis (streamed) ───────────────────────────
+        let riskLevel:    string   = "Medium";
+        let riskSummary:  string   = "";
         let filesToUpdate: string[] = [];
 
         for await (const chunk of synthesizeBlastRadius({
@@ -131,13 +150,16 @@ export async function POST(
           changeDescription: change_description.trim(),
           affectedFiles,
           intentSnapshots,
+          signal:            ac.signal,
         })) {
+          if (ac.signal.aborted) break;
+
           if (chunk.startsWith("\n__RESULT__:")) {
             const jsonStr = chunk.slice("\n__RESULT__:".length);
             try {
-              const result = JSON.parse(jsonStr);
-              riskLevel    = result.risk_level ?? "Medium";
-              riskSummary  = result.risk_summary ?? "";
+              const result  = JSON.parse(jsonStr);
+              riskLevel     = result.risk_level     ?? "Medium";
+              riskSummary   = result.risk_summary   ?? "";
               filesToUpdate = result.files_to_update ?? [];
             } catch { /* keep defaults */ }
           } else {
@@ -145,13 +167,16 @@ export async function POST(
           }
         }
 
-        // ── Phase 4: Persist + return structured result ───────────────────────
+        if (ac.signal.aborted) return;
+
+        // ── Phase 4: Persist + return structured result ────────────────────
         const { data: savedQuery } = await admin
           .from("blast_radius_queries")
           .insert({
             project_id:           params.id,
             query_file:           file_path.trim(),
             change_description:   change_description.trim(),
+            analysis_name:        analysis_name?.trim() || null,
             affected_files:       affectedFiles,
             intent_snapshots:     intentSnapshots,
             risk_summary:         riskSummary,
@@ -164,9 +189,9 @@ export async function POST(
           .single();
 
         send("result", {
-          query_id:      savedQuery?.id ?? null,
-          risk_level:    riskLevel,
-          risk_summary:  riskSummary,
+          query_id:        savedQuery?.id ?? null,
+          risk_level:      riskLevel,
+          risk_summary:    riskSummary,
           files_to_update: filesToUpdate,
           stats: {
             edges_traversed: edgesTraversed,
@@ -176,9 +201,11 @@ export async function POST(
           },
         });
       } catch (err) {
+        if (ac.signal.aborted) return; // timeout already sent the error event
         console.error("[blast-radius] error:", err);
         send("error", { message: "Analysis failed — check server logs" });
       } finally {
+        clearTimeout(timeoutId);
         controller.close();
       }
     },
@@ -227,7 +254,7 @@ export async function GET(
   const { data: queries } = await admin
     .from("blast_radius_queries")
     .select(
-      "id, query_file, change_description, risk_level, risk_summary, " +
+      "id, query_file, change_description, analysis_name, risk_level, risk_summary, " +
       "ast_edges_traversed, semantic_links_found, created_at, " +
       "affected_files, intent_snapshots"
     )
