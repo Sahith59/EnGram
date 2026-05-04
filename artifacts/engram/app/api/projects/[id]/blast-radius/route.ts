@@ -24,7 +24,7 @@ import { traverseAstEdges } from "@/lib/blast-radius/ast-traverser";
 import { retrieveIntent } from "@/lib/blast-radius/intent-retriever";
 import { synthesizeBlastRadius } from "@/lib/blast-radius/synthesizer";
 
-const ANALYSIS_TIMEOUT_MS = 15_000;
+const ANALYSIS_TIMEOUT_MS = 10_000;
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
 async function resolveUserAndProject(
@@ -89,23 +89,34 @@ export async function POST(
   const admin   = createAdminClient();
   const encoder = new TextEncoder();
 
-  // ── 15-second hard timeout ─────────────────────────────────────────────────
+  // ── 10-second hard timeout ─────────────────────────────────────────────────
   const ac        = new AbortController();
   const timeoutId = setTimeout(
-    () => ac.abort(new Error("Analysis timed out after 15 seconds")),
+    () => ac.abort(new Error("Analysis timed out after 10 seconds")),
     ANALYSIS_TIMEOUT_MS
   );
 
   const stream = new ReadableStream({
     async start(controller) {
+      // Guard against double-close (timeout abort listener + finally block racing)
+      let controllerClosed = false;
+      function safeClose() {
+        if (!controllerClosed) {
+          controllerClosed = true;
+          controller.close();
+        }
+      }
+
       function send(event: string, data: unknown) {
-        controller.enqueue(encoder.encode(sseEvent(event, data)));
+        if (!controllerClosed) {
+          controller.enqueue(encoder.encode(sseEvent(event, data)));
+        }
       }
 
       // If timeout fires while we're still running, emit error and close
       ac.signal.addEventListener("abort", () => {
-        send("error", { message: "Analysis timed out — the codebase may be too large. Try a more specific file path." });
-        controller.close();
+        send("error", { message: "Analysis timed out after 10 seconds — try a more specific file path or a smaller repo." });
+        safeClose();
       }, { once: true });
 
       try {
@@ -206,7 +217,7 @@ export async function POST(
         send("error", { message: "Analysis failed — check server logs" });
       } finally {
         clearTimeout(timeoutId);
-        controller.close();
+        safeClose();
       }
     },
   });

@@ -2242,6 +2242,20 @@ function BlastRadiusTab({ projectId }: { projectId: string }) {
         </div>
       )}
 
+      {/* ── Saved confirmation ────────────────────────────── */}
+      {phase === "done" && result && (
+        <div className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-green-400/25 bg-green-400/5 text-xs text-green-400">
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            Analysis saved
+            {analysisName.trim() && (
+              <> as <span className="font-medium">&ldquo;{analysisName.trim()}&rdquo;</span></>
+            )}
+            {" "}— visible in Past Analyses below.
+          </span>
+        </div>
+      )}
+
       {/* ── Results ───────────────────────────────────────── */}
       {(affectedFiles.length > 0 || intentSnapshots.length > 0 || streamText || result) && (
         <div className="space-y-4">
