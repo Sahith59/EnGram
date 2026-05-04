@@ -553,6 +553,14 @@ function CommitLinkModal({ projectId, snapshotId, snapshotTitle, onClose }: {
    COMMITS TAB — recent commits + semantic links
 ══════════════════════════════════════════════════════════ */
 
+interface DiffFile {
+  filename:  string;
+  status:    string;
+  additions: number;
+  deletions: number;
+  patch:     string | null;
+}
+
 interface CommitRow {
   sha: string;
   sha_short: string;
@@ -593,6 +601,9 @@ function CommitsTab({ projectId, snapshots, focusedCommitSha, onFocusHandled }: 
   const [repoFullName, setRepoFullName] = useState<string>("");
   const [provider, setProvider] = useState<"github" | "gitlab">("github");
   const commitRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [diffMap, setDiffMap] = useState<Record<string, DiffFile[]>>({});
+  const [diffLoading, setDiffLoading] = useState<string | null>(null);
+  const [showDiff, setShowDiff] = useState<Record<string, boolean>>({});
 
   async function loadCommits() {
     setLoading(true);
@@ -645,6 +656,24 @@ function CommitsTab({ projectId, snapshots, focusedCommitSha, onFocusHandled }: 
       setExpandedSha(sha);
       loadIntent(sha);
     }
+  }
+
+  async function loadDiff(sha: string) {
+    if (diffMap[sha]) return;
+    setDiffLoading(sha);
+    try {
+      const r = await fetch(`/api/projects/${projectId}/commits/${sha}/diff`);
+      if (r.ok) {
+        const d = await r.json();
+        setDiffMap((prev) => ({ ...prev, [sha]: d.files ?? [] }));
+      }
+    } finally { setDiffLoading(null); }
+  }
+
+  function toggleDiff(sha: string) {
+    const next = !showDiff[sha];
+    setShowDiff((prev) => ({ ...prev, [sha]: next }));
+    if (next) loadDiff(sha);
   }
 
   async function unlinkSnapshot(sha: string, snapshotId: string) {
@@ -819,13 +848,57 @@ function CommitsTab({ projectId, snapshots, focusedCommitSha, onFocusHandled }: 
                         </div>
                       )}
 
-                      {/* Add conversation button */}
-                      <button
-                        onClick={() => setLinkModalCommit(commit)}
-                        className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-gh-border bg-gh-bg text-gh-muted hover:text-gh-text hover:border-engram/40 transition-colors">
-                        <MessageSquare className="h-3.5 w-3.5" />
-                        Add conversation
-                      </button>
+                      {/* Diff viewer */}
+                      {showDiff[commit.sha] && (
+                        <div className="rounded-lg border border-gh-border overflow-hidden">
+                          <div className="flex items-center justify-between px-3 py-2 bg-gh-bg border-b border-gh-border">
+                            <span className="text-[10px] font-mono uppercase tracking-wider text-gh-muted flex items-center gap-1.5">
+                              <FileCode className="h-3 w-3" />
+                              Code Changes
+                            </span>
+                            {diffLoading === commit.sha && (
+                              <Loader2 className="h-3 w-3 animate-spin text-engram-light" />
+                            )}
+                          </div>
+                          {diffLoading === commit.sha ? (
+                            <div className="px-4 py-6 flex items-center justify-center gap-2 text-xs text-gh-muted">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin text-engram-light" />
+                              Loading diff…
+                            </div>
+                          ) : !diffMap[commit.sha] || diffMap[commit.sha].length === 0 ? (
+                            <p className="px-4 py-4 text-xs text-gh-muted">No file changes found for this commit.</p>
+                          ) : (
+                            <div className="divide-y divide-gh-border max-h-[500px] overflow-y-auto">
+                              {diffMap[commit.sha].map((file) => (
+                                <CommitDiffFile key={file.filename} file={file} />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Action buttons row */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          onClick={() => toggleDiff(commit.sha)}
+                          className={cn(
+                            "flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors",
+                            showDiff[commit.sha]
+                              ? "border-engram/40 bg-engram/5 text-engram-light"
+                              : "border-gh-border bg-gh-bg text-gh-muted hover:text-gh-text hover:border-engram/40"
+                          )}>
+                          {diffLoading === commit.sha
+                            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            : <FileCode className="h-3.5 w-3.5" />}
+                          {showDiff[commit.sha] ? "Hide Diff" : "View Diff"}
+                        </button>
+                        <button
+                          onClick={() => setLinkModalCommit(commit)}
+                          className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-gh-border bg-gh-bg text-gh-muted hover:text-gh-text hover:border-engram/40 transition-colors">
+                          <MessageSquare className="h-3.5 w-3.5" />
+                          Add conversation
+                        </button>
+                      </div>
                     </div>
                   </motion.div>
                 )}
@@ -853,6 +926,97 @@ function CommitsTab({ projectId, snapshots, focusedCommitSha, onFocusHandled }: 
             setLinkModalCommit(null);
           }}
         />
+      )}
+    </div>
+  );
+}
+
+/* ── CommitDiffFile — renders a single file's unified diff ── */
+function CommitDiffFile({ file }: { file: DiffFile }) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  const statusColor: Record<string, string> = {
+    added:    "text-green-400 bg-green-500/10 border-green-500/25",
+    removed:  "text-red-400 bg-red-500/10 border-red-500/25",
+    modified: "text-blue-400 bg-blue-500/10 border-blue-500/25",
+    renamed:  "text-yellow-400 bg-yellow-500/10 border-yellow-500/25",
+  };
+  const badge = statusColor[file.status] ?? "text-gh-muted bg-gh-bg border-gh-border";
+
+  const lines = (file.patch ?? "").split("\n");
+
+  return (
+    <div className="bg-gh-canvas">
+      {/* file header */}
+      <button
+        onClick={() => setCollapsed((p) => !p)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gh-bg transition-colors text-left">
+        <ChevronDown className={cn("h-3.5 w-3.5 text-gh-muted shrink-0 transition-transform", collapsed && "-rotate-90")} />
+        <FileCode className="h-3.5 w-3.5 text-gh-muted shrink-0" />
+        <span className="text-xs font-mono text-gh-text flex-1 truncate">{file.filename}</span>
+        <span className={cn("text-[10px] px-1.5 py-0.5 rounded border shrink-0", badge)}>
+          {file.status}
+        </span>
+        {(file.additions > 0 || file.deletions > 0) && (
+          <span className="text-[10px] font-mono text-gh-muted shrink-0">
+            <span className="text-green-400">+{file.additions}</span>
+            {" / "}
+            <span className="text-red-400">-{file.deletions}</span>
+          </span>
+        )}
+      </button>
+
+      {/* diff body */}
+      {!collapsed && file.patch && (
+        <div className="overflow-x-auto border-t border-gh-border">
+          <table className="w-full text-[11px] font-mono border-collapse">
+            <tbody>
+              {lines.map((line, i) => {
+                const isAdd     = line.startsWith("+") && !line.startsWith("+++");
+                const isDel     = line.startsWith("-") && !line.startsWith("---");
+                const isHunk    = line.startsWith("@@");
+                const isFileHdr = line.startsWith("+++") || line.startsWith("---");
+
+                const rowClass = isAdd
+                  ? "bg-green-500/8"
+                  : isDel
+                  ? "bg-red-500/8"
+                  : isHunk
+                  ? "bg-engram/5"
+                  : isFileHdr
+                  ? "bg-gh-bg"
+                  : "";
+
+                const lineClass = isAdd
+                  ? "text-green-400"
+                  : isDel
+                  ? "text-red-400"
+                  : isHunk
+                  ? "text-engram-light"
+                  : "text-gh-muted";
+
+                return (
+                  <tr key={i} className={rowClass}>
+                    <td className={cn("select-none pl-3 pr-2 py-0.5 text-right w-6 border-r border-gh-border/50", lineClass)}>
+                      {isAdd ? "+" : isDel ? "−" : isHunk ? "⋯" : ""}
+                    </td>
+                    <td className="pl-3 pr-4 py-0.5 whitespace-pre text-gh-text">
+                      <span className={isHunk ? "text-engram-light" : isAdd ? "text-green-300" : isDel ? "text-red-300" : ""}>
+                        {isAdd || isDel ? line.slice(1) : line}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {!collapsed && !file.patch && (
+        <p className="px-4 py-3 text-xs text-gh-muted border-t border-gh-border">
+          Binary file or patch not available.
+        </p>
       )}
     </div>
   );

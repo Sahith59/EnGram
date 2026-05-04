@@ -5,7 +5,7 @@
 -- ============================================================
 
 create table if not exists public.blast_radius_queries (
-  id                    uuid primary key default uuid_generate_v4(),
+  id                    uuid primary key default gen_random_uuid(),
   project_id            uuid not null references public.projects(id) on delete cascade,
   query_file            text not null,
   change_description    text not null,

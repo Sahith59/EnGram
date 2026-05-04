@@ -153,70 +153,19 @@ export async function assignSnapshotToProject(opts: {
           .eq("id", projectId);
       }
     } else {
-      // ── No centroid match — check for repo-linked workspaces first ────────
-      // Before creating a new manual project, prefer any existing Repository
-      // Workspace for this team. This prevents the "QueryMesh Database Query
-      // Optimization" duplicate scenario where a conversation about a known
-      // repo ends up in a new orphan project because the workspace has 0
-      // captures and no centroid yet.
-      const { data: repoProjects } = await admin
-        .from("projects")
-        .select("id, name, github_repo_id, snapshot_count")
-        .eq("team_id", teamId)
-        .not("github_repo_id", "is", null)
-        .order("snapshot_count", { ascending: false })
-        .limit(10);
-
-      if (repoProjects && repoProjects.length > 0) {
-        // Pick the repo workspace with the fewest captures so new content
-        // is distributed rather than always piling onto the first one.
-        // If only one repo workspace exists it gets everything by default.
-        // We pick the one with the lowest count (but at least 1 to show it
-        // exists) if possible, otherwise just the first.
-        const target =
-          repoProjects.find((p) => p.snapshot_count === 0) ??
-          repoProjects[repoProjects.length - 1];
-
-        projectId = target.id;
-        projectName = target.name;
-        isNew = false;
-
-        console.log(
-          `[clustering] no centroid match → routing to repo workspace "${projectName}" ` +
-            `(github_repo_id=${target.github_repo_id}) to avoid orphan project`
-        );
-
-        // Seed centroid with this capture's embedding so future clustering works
-        await admin
-          .from("projects")
-          .update({
-            centroid: embedding as unknown as string,
-            snapshot_count: (target.snapshot_count ?? 0) + 1,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", projectId);
-      } else {
-        // ── No repo workspaces exist — create a new manual project ──────────
-        isNew = true;
-        projectName = await autoNameProject(title, summary);
-
-        const { data: newProj, error: insertErr } = await admin
-          .from("projects")
-          .insert({
-            team_id: teamId,
-            name: projectName,
-            centroid: embedding as unknown as string,
-            snapshot_count: 1,
-          })
-          .select("id")
-          .single();
-
-        if (insertErr || !newProj) {
-          console.warn("[clustering] project insert failed:", insertErr?.message);
-          return null;
-        }
-        projectId = newProj.id;
-      }
+      // ── No centroid match — leave unassigned ──────────────────────────────
+      // The upstream repo-detector already tried semantic matching against all
+      // linked repos and found no confident match. Forcing assignment to a
+      // repo workspace here causes unrelated conversations to pollute real
+      // projects (e.g. an ENGRAM conversation landing in AgentMem-OS just
+      // because it's the only repo workspace in the team).
+      //
+      // Instead, leave project_id as null → the capture appears in the
+      // general feed on the dashboard where the user can manually assign it.
+      console.log(
+        `[clustering] no centroid match for snapshot ${snapshotId} → leaving unassigned (general feed)`
+      );
+      return null;
     }
 
     // 2. Assign project_id on the snapshot

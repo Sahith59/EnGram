@@ -100,7 +100,7 @@ Write the blast radius analysis now.`;
   const fullText: string[] = [];
 
   const stream = anthropic.messages.stream({
-    model:      "claude-3-5-sonnet-20241022",
+    model:      "claude-sonnet-4-5",
     max_tokens: 800,
     system:     systemPrompt,
     messages:   [{ role: "user", content: userPrompt }],
