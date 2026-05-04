@@ -318,10 +318,15 @@ export async function indexChangedFiles(event: RepoIndexEvent): Promise<{
     }
   }
 
-  // Record the commit SHA we indexed up to
+  // Record the commit SHA and timestamp we indexed up to
+  const indexedAt = new Date().toISOString();
   await admin
     .from("github_repos")
-    .update({ last_indexed_commit: commitSha, updated_at: new Date().toISOString() })
+    .update({
+      last_indexed_commit: commitSha,
+      indexed_at: indexedAt,
+      updated_at: indexedAt,
+    })
     .eq("id", repoId);
 
   console.log(

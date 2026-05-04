@@ -19,6 +19,7 @@ type Repo = {
   file_count: number; chunk_count: number; is_private: boolean;
   indexed_at: string | null; default_branch: string | null;
   last_indexed_commit: string | null;
+  provider: "github" | "gitlab" | null;
 };
 type MemberProfile = { id: string; full_name: string | null; display_name: string | null; avatar_url: string | null; email: string | null };
 type Member = { id: string; user_id: string; role: string; joined_at: string; profile: MemberProfile | null; is_self: boolean };
@@ -1148,6 +1149,11 @@ function MembersTab({ projectId, members, isOwner, onRefresh, repo }: {
         <div className="flex items-center gap-2 mb-3">
           <Github className="h-4 w-4 text-engram-light" />
           <h3 className="text-sm font-semibold text-gh-text">Code Repository</h3>
+          {repo?.provider && (
+            <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full border border-gh-border/60 text-gh-muted capitalize">
+              {repo.provider === "github" ? "GitHub App" : "GitLab OAuth"}
+            </span>
+          )}
         </div>
         {repo ? (
           <div className="space-y-3">
@@ -1155,7 +1161,9 @@ function MembersTab({ projectId, members, isOwner, onRefresh, repo }: {
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <a
-                  href={`https://github.com/${repo.repo_full_name}`}
+                  href={repo.provider === "gitlab"
+                    ? `https://gitlab.com/${repo.repo_full_name}`
+                    : `https://github.com/${repo.repo_full_name}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 text-sm text-gh-text hover:text-engram-light transition-colors font-medium"
@@ -1202,7 +1210,10 @@ function MembersTab({ projectId, members, isOwner, onRefresh, repo }: {
             {/* ── First-index notice ── */}
             {!repo.last_indexed_commit && (
               <div className="text-xs text-gh-muted bg-gh-bg border border-gh-border rounded-md px-3 py-2">
-                AST indexing starts automatically on the next push to <span className="font-mono">{repo.default_branch ?? "main"}</span>. Ensure a webhook is configured in your GitHub App installation.
+                AST indexing starts automatically on the next push to <span className="font-mono">{repo.default_branch ?? "main"}</span>.{" "}
+                {repo.provider === "gitlab"
+                  ? "Ensure a webhook is configured in your GitLab project settings."
+                  : "Ensure a webhook is configured in your GitHub App installation."}
               </div>
             )}
 
@@ -1222,15 +1233,23 @@ function MembersTab({ projectId, members, isOwner, onRefresh, repo }: {
         ) : (
           <div className="space-y-3">
             <p className="text-xs text-gh-muted">
-              No code repository linked to this project yet. Connect a GitHub repository to enable codebase search and AST dependency analysis.
+              No code repository linked yet. Connect a GitHub or GitLab repository to enable codebase search and AST dependency analysis.
             </p>
             {isOwner && (
-              <a
-                href={`/settings?tab=integrations`}
-                className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-gh-border bg-gh-bg text-gh-text hover:border-engram-light/40 hover:text-engram-light transition-colors">
-                <Github className="h-3.5 w-3.5" />
-                Connect via GitHub App
-              </a>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href={`/settings?tab=integrations`}
+                  className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-gh-border bg-gh-bg text-gh-text hover:border-engram-light/40 hover:text-engram-light transition-colors">
+                  <Github className="h-3.5 w-3.5" />
+                  GitHub App
+                </a>
+                <a
+                  href={`/settings?tab=integrations`}
+                  className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-gh-border bg-gh-bg text-gh-text hover:border-engram-light/40 hover:text-engram-light transition-colors">
+                  <GitBranch className="h-3.5 w-3.5" />
+                  GitLab OAuth
+                </a>
+              </div>
             )}
           </div>
         )}

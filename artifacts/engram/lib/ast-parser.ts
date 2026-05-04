@@ -313,7 +313,7 @@ function extractJsEdges(tree: Parser.Tree, sourceFile: string, lang: string): As
 function extractPythonEdges(tree: Parser.Tree, sourceFile: string): AstEdge[] {
   const edges: AstEdge[] = [];
 
-  const targetTypes = new Set(["import_statement", "import_from_statement", "class_definition"]);
+  const targetTypes = new Set(["import_statement", "import_from_statement", "class_definition", "call"]);
   const nodes = walkCollect(tree.rootNode, targetTypes);
 
   for (const node of nodes) {
