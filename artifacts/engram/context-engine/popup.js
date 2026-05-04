@@ -22,6 +22,40 @@ const reassignConfirm = document.getElementById("reassign-confirm");
 
 const SUPPORTED = ["chat.openai.com", "chatgpt.com", "claude.ai", "gemini.google.com"];
 
+// ── F-01: Signal badge ────────────────────────────────────────────────────────
+const signalBadge = document.getElementById("signal-badge");
+const signalIcon = document.getElementById("signal-icon");
+const signalLabelEl = document.getElementById("signal-label");
+const signalScoreEl = document.getElementById("signal-score");
+const signalSuggestionEl = document.getElementById("signal-suggestion");
+
+function showSignalBadge(score) {
+  if (!score || score.label === "low") { signalBadge.style.display = "none"; return; }
+  const isHigh = score.label === "high";
+  signalIcon.textContent = isHigh ? "🔴" : "🟡";
+  signalLabelEl.textContent = isHigh ? "High-value decisions detected" : "Capture-worthy context";
+  signalScoreEl.textContent = `(${score.total}/100)`;
+  signalSuggestionEl.textContent = score.suggestion ?? "";
+  signalBadge.style.display = "block";
+  signalBadge.style.borderColor = isHigh ? "rgba(248,113,113,0.3)" : "rgba(234,179,8,0.3)";
+  signalBadge.style.background = isHigh ? "rgba(248,113,113,0.06)" : "rgba(234,179,8,0.06)";
+  signalLabelEl.style.color = isHigh ? "#fca5a5" : "#fde68a";
+}
+
+async function checkSignal(tab) {
+  if (!tab) return;
+  const host = tab?.url ? new URL(tab.url).hostname : "";
+  if (!SUPPORTED.some((h) => host.includes(h))) return;
+  try {
+    const ready = await ensureContentScript(tab.id);
+    if (!ready) return;
+    const result = await chrome.tabs.sendMessage(tab.id, { type: "GET_PAIRS" });
+    if (result?.ok && result.pairs?.length >= 2) {
+      showSignalBadge(result.score ?? null);
+    }
+  } catch { /* silent — signal check is best-effort */ }
+}
+
 // Track the last captured snapshot id for reassignment
 let lastSnapshotId = null;
 let lastDetectedProjectId = null;
@@ -310,6 +344,8 @@ async function refreshTabContext() {
   captureBtn.textContent = isSupported
     ? "Capture this conversation"
     : "Open ChatGPT, Claude, or Gemini";
+  // Hide signal badge when not on a supported page
+  if (!isSupported) signalBadge.style.display = "none";
   return tab;
 }
 
@@ -495,10 +531,45 @@ modeButtons.forEach((btn) => {
   });
 });
 
+// ── F-12: Health display ──────────────────────────────────────────────────────
+
+async function applyHealthToStatus() {
+  const health = await send({ type: "GET_HEALTH" });
+  if (!health || health.status === "unknown" || !health.checked_at) return;
+  // If ENGRAM is degraded/offline, append a warning to the existing status text
+  if (health.status !== "ok") {
+    const current = text.innerHTML;
+    const warning = health.status === "degraded"
+      ? ' · <span style="color:var(--yellow)">⚠️ Degraded</span>'
+      : ' · <span style="color:var(--red)">⚠️ Offline</span>';
+    if (!current.includes("Degraded") && !current.includes("Offline")) {
+      text.innerHTML = current + warning;
+      dot.classList.remove("ok");
+      dot.classList.add(health.status === "degraded" ? "warn" : "err");
+    }
+  }
+  // Show last-checked time
+  if (health.checked_at) {
+    const ago = Math.round((Date.now() - health.checked_at) / 60000);
+    const checkedInfo = document.createElement("span");
+    checkedInfo.style.cssText = "display:block;font-size:10px;color:var(--muted);margin-top:3px;";
+    checkedInfo.textContent = `API: ${health.status} · ${ago < 1 ? "just now" : `${ago}m ago`}`;
+    const existing = document.getElementById("health-time");
+    if (!existing) {
+      checkedInfo.id = "health-time";
+      document.querySelector(".status")?.appendChild(checkedInfo);
+    }
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 (async function init() {
-  await refreshTabContext();
+  const tab = await refreshTabContext();
   await refreshIdentity();
   await loadCaptureMode();
+  // Health check (non-blocking)
+  applyHealthToStatus().catch(() => {});
+  // Signal check (non-blocking — check if current conversation is worth capturing)
+  checkSignal(tab).catch(() => {});
 })();

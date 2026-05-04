@@ -8,7 +8,7 @@ import {
   GitCommit, MessageSquare, Sparkles, ExternalLink, Clock,
   Crown, UserPlus, Trash2, Copy, Check, Send, Loader2,
   ChevronRight, X, GitBranch, Shield, AlertTriangle,
-  CheckCircle2, XCircle, ChevronDown, Zap, RefreshCw,
+  CheckCircle2, XCircle, ChevronDown, Zap, RefreshCw, Archive,
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
@@ -32,6 +32,10 @@ type Project = {
   github_repo_id: string | null; repo: Repo | null;
   member_count: number; is_owner: boolean; is_member: boolean;
   created_by: string | null;
+  is_archived: boolean;
+  is_dormant: boolean;
+  last_capture_at: string | null;
+  days_since_capture: number | null;
 };
 type AskSource = { type: "snapshot" | "github"; title: string; excerpt: string; tool?: string; path?: string; language?: string };
 
@@ -85,6 +89,44 @@ const TOOL_DOT: Record<string, string> = { chatgpt: "bg-tool-chatgpt", claude: "
 const TOOL_TEXT: Record<string, string> = { chatgpt: "text-tool-chatgpt", claude: "text-tool-claude", gemini: "text-tool-gemini" };
 
 type Tab = "feed" | "ask" | "brief" | "members";
+
+/* ── F-13: Archive/Unarchive buttons ────────────────────── */
+function ArchiveButton({ projectId, onDone }: { projectId: string; onDone: () => void }) {
+  const [loading, setLoading] = useState(false);
+  async function handleArchive() {
+    if (!confirm("Archive this project? It will stop receiving new captures and be hidden from routing.")) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/archive`, { method: "POST" });
+      if (res.ok) onDone();
+    } finally { setLoading(false); }
+  }
+  return (
+    <button onClick={handleArchive} disabled={loading}
+      className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded border border-gh-border text-gh-muted hover:text-gh-text hover:border-gh-muted/60 transition-colors disabled:opacity-50">
+      {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Archive className="h-3 w-3" />}
+      Archive
+    </button>
+  );
+}
+
+function UnarchiveButton({ projectId, onDone }: { projectId: string; onDone: () => void }) {
+  const [loading, setLoading] = useState(false);
+  async function handleUnarchive() {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/archive`, { method: "DELETE" });
+      if (res.ok) onDone();
+    } finally { setLoading(false); }
+  }
+  return (
+    <button onClick={handleUnarchive} disabled={loading}
+      className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded border border-gh-border text-gh-muted hover:text-gh-text hover:border-gh-muted/60 transition-colors disabled:opacity-50">
+      {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Archive className="h-3 w-3" />}
+      Unarchive
+    </button>
+  );
+}
 
 /* ══════════════════════════════════════════════════════════ */
 export default function ProjectWorkspacePage() {
@@ -211,6 +253,44 @@ export default function ProjectWorkspacePage() {
           </div>
         </div>
       </div>
+
+      {/* ── F-13: Dormant / Archived banner ─────────────── */}
+      {(project.is_archived || project.is_dormant) && (
+        <div className={cn(
+          "border-b px-6 md:px-10 py-3 max-w-6xl mx-auto",
+          project.is_archived
+            ? "bg-gh-bg border-gh-border"
+            : "bg-amber-500/5 border-amber-500/15"
+        )}>
+          <div className="flex items-center gap-3">
+            {project.is_archived ? (
+              <>
+                <Archive className="h-4 w-4 text-gh-muted shrink-0" />
+                <p className="text-sm text-gh-muted flex-1">
+                  This project is archived. It won&apos;t receive new captures or appear in routing.
+                </p>
+                {project.is_owner && (
+                  <UnarchiveButton projectId={project.id} onDone={load} />
+                )}
+              </>
+            ) : (
+              <>
+                <Clock className="h-4 w-4 text-amber-400 shrink-0" />
+                <p className="text-sm text-gh-muted flex-1">
+                  <span className="text-amber-400 font-medium">Dormant</span>
+                  {project.days_since_capture != null
+                    ? ` — no captures in ${project.days_since_capture} days.`
+                    : " — no captures yet."}
+                  {" "}Archive to exclude from routing.
+                </p>
+                {project.is_owner && (
+                  <ArchiveButton projectId={project.id} onDone={load} />
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Tab Content ─────────────────────────────────── */}
       <div className="px-6 md:px-10 py-8 max-w-6xl mx-auto">

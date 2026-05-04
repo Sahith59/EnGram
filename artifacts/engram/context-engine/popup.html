@@ -214,6 +214,19 @@
         <span id="status-text" class="status-text muted">Checking…</span>
       </div>
 
+      <!-- F-01: Signal score badge (shown when conversation has capture-worthy decisions) -->
+      <div id="signal-badge" style="display:none; margin-bottom:8px; padding:8px 10px;
+           border-radius:6px; border:1px solid; font-size:12px; line-height:1.35;">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span id="signal-icon" style="font-size:14px; flex:0 0 auto;">🔴</span>
+          <div style="flex:1">
+            <span id="signal-label" style="font-weight:600;"></span>
+            <span id="signal-score" style="font-size:10px; color:var(--muted); margin-left:4px;"></span>
+          </div>
+        </div>
+        <p id="signal-suggestion" style="margin:4px 0 0 20px; color:var(--muted); font-size:11px;"></p>
+      </div>
+
       <button id="capture-btn" class="btn primary" disabled>Capture this conversation</button>
       <button id="checkpoint-btn" class="btn" disabled style="margin-top:6px; border-color: rgba(124,58,237,0.4); color: var(--engram-light); font-size: 12px; padding: 8px 12px;">
         ⚡ Save Checkpoint &amp; Get Continuation Brief

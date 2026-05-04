@@ -339,12 +339,68 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     checkpoint(msg.payload).then(sendResponse);
     return true;
   }
+  // HEALTH_CHECK — force an immediate heartbeat and return result
+  if (msg?.type === "HEALTH_CHECK") {
+    heartbeat().then(sendResponse);
+    return true;
+  }
+  // GET_HEALTH — return cached health status
+  if (msg?.type === "GET_HEALTH") {
+    chrome.storage.local.get("engram_health").then(({ engram_health }) => {
+      sendResponse(engram_health ?? { status: "unknown", checked_at: null });
+    });
+    return true;
+  }
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
   console.log("[engram] extension installed / updated");
   await fetchIdentity({ force: true });
+  await heartbeat();
 });
 
-// Periodically retry the queue
+// ── F-12: Health heartbeat ────────────────────────────────────────────────────
+
+async function heartbeat() {
+  const api = await getApiUrl();
+  const startMs = Date.now();
+  try {
+    const res = await fetch(`${api}/api/health`, {
+      credentials: "include",
+      headers: { "Cache-Control": "no-cache" },
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = res.ok ? await res.json().catch(() => ({})) : {};
+    const health = {
+      status: res.ok ? (data.status ?? "ok") : "error",
+      supabase: data.supabase ?? false,
+      ai: data.ai ?? false,
+      latency_ms: Date.now() - startMs,
+      checked_at: Date.now(),
+    };
+    await chrome.storage.local.set({ engram_health: health });
+
+    // Update badge color to reflect health when no other badge is showing
+    const { engram_badge_expiry } = await chrome.storage.local.get("engram_badge_expiry");
+    if (!engram_badge_expiry || Date.now() > engram_badge_expiry) {
+      if (health.status === "ok") {
+        await chrome.action.setBadgeText({ text: "" }); // clean badge = healthy
+      } else {
+        await setBadge("!", "#eab308"); // yellow = degraded/error
+      }
+    }
+    return health;
+  } catch {
+    const health = { status: "error", supabase: false, ai: false, latency_ms: Date.now() - startMs, checked_at: Date.now() };
+    await chrome.storage.local.set({ engram_health: health });
+    return health;
+  }
+}
+
+// Periodically retry the queue and run heartbeat
 setInterval(drainQueue, 5 * 60_000);
+setInterval(heartbeat, 5 * 60_000);
+
+// Run heartbeat on install/startup
+chrome.runtime.onInstalled.removeListener?.(() => {});
+heartbeat().catch(() => {});

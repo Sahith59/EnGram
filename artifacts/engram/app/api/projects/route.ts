@@ -3,9 +3,12 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 
+const DORMANT_DAYS = 90;
+
 /**
  * GET /api/projects
  * List projects for the team, enriched with repo info + members + recent snapshots.
+ * Phase 13: adds is_archived, last_capture_at, is_dormant.
  */
 export async function GET(_request: NextRequest) {
   if (!isSupabaseConfigured()) {
@@ -20,24 +23,46 @@ export async function GET(_request: NextRequest) {
   if (!profile?.team_id) return NextResponse.json({ error: "No team" }, { status: 400 });
 
   const admin = createAdminClient();
-  const { data: projects, error: pErr } = await admin
+
+  // Try with is_archived column (Phase 13 migration), fall back gracefully
+  let projects: Record<string, unknown>[] | null = null;
+  let hasArchivedCol = false;
+  let migration_needed = false;
+
+  const { data: p1, error: pErr1 } = await admin
     .from("projects")
-    .select("id, name, description, snapshot_count, created_at, updated_at, github_repo_id, created_by")
+    .select("id, name, description, snapshot_count, created_at, updated_at, github_repo_id, created_by, is_archived")
     .eq("team_id", profile.team_id)
     .order("updated_at", { ascending: false });
 
-  if (pErr) {
-    // Column doesn't exist yet (migration not applied) — fallback
-    if (pErr.message.includes("github_repo_id") || pErr.message.includes("created_by")) {
-      const { data: fallback } = await admin
-        .from("projects")
-        .select("id, name, description, snapshot_count, created_at, updated_at")
-        .eq("team_id", profile.team_id)
-        .order("updated_at", { ascending: false });
-      return NextResponse.json({ projects: fallback ?? [], migration_needed: true });
+  if (!pErr1) {
+    projects = (p1 ?? []) as Record<string, unknown>[];
+    hasArchivedCol = true;
+  } else {
+    // Try without is_archived (migration 0015 not applied yet)
+    const { data: p2, error: pErr2 } = await admin
+      .from("projects")
+      .select("id, name, description, snapshot_count, created_at, updated_at, github_repo_id, created_by")
+      .eq("team_id", profile.team_id)
+      .order("updated_at", { ascending: false });
+
+    if (pErr2) {
+      // Try minimal fallback
+      if (pErr2.message.includes("github_repo_id") || pErr2.message.includes("created_by")) {
+        const { data: fallback } = await admin
+          .from("projects")
+          .select("id, name, description, snapshot_count, created_at, updated_at")
+          .eq("team_id", profile.team_id)
+          .order("updated_at", { ascending: false });
+        return NextResponse.json({ projects: fallback ?? [], migration_needed: true });
+      }
+      return NextResponse.json({ error: "Failed to load projects" }, { status: 500 });
     }
-    return NextResponse.json({ error: "Failed to load projects" }, { status: 500 });
+    projects = (p2 ?? []) as Record<string, unknown>[];
+    migration_needed = true; // 0015 not applied
   }
+
+  const now = Date.now();
 
   const enriched = await Promise.all(
     (projects ?? []).map(async (proj) => {
@@ -45,32 +70,47 @@ export async function GET(_request: NextRequest) {
         proj.github_repo_id
           ? admin.from("github_repos")
               .select("id, repo_full_name, repo_name, owner_login, file_count, chunk_count, indexed_at, default_branch, is_private")
-              .eq("id", proj.github_repo_id).single()
+              .eq("id", proj.github_repo_id as string).single()
           : Promise.resolve({ data: null }),
         admin.from("project_members")
           .select("user_id, role")
-          .eq("project_id", proj.id)
+          .eq("project_id", proj.id as string)
           .order("joined_at", { ascending: true }),
         admin.from("context_snapshots")
           .select("id, title, ai_tool, created_at, author_handle")
-          .eq("project_id", proj.id)
+          .eq("project_id", proj.id as string)
           .order("created_at", { ascending: false }).limit(3),
       ]);
 
       const members = (membersRes as { data: { user_id: string; role: string }[] | null }).data ?? [];
+      const recentSnaps = snapsRes.data ?? [];
+      const lastCaptureAt = recentSnaps[0]?.created_at ?? null;
+
+      const isDormant = lastCaptureAt
+        ? now - new Date(lastCaptureAt).getTime() > DORMANT_DAYS * 24 * 60 * 60 * 1000
+        : (proj.snapshot_count as number) === 0;
+
+      const isArchived = hasArchivedCol ? !!(proj.is_archived) : false;
+
       return {
         ...proj,
+        is_archived: isArchived,
+        last_capture_at: lastCaptureAt,
+        is_dormant: isDormant,
+        days_since_capture: lastCaptureAt
+          ? Math.floor((now - new Date(lastCaptureAt).getTime()) / (24 * 60 * 60 * 1000))
+          : null,
         repo: (repoRes as { data: unknown }).data ?? null,
         members,
         member_count: members.length,
-        recent_snapshots: snapsRes.data ?? [],
+        recent_snapshots: recentSnaps,
         is_owner: members.some((m) => m.user_id === user.id && m.role === "owner"),
         is_member: members.some((m) => m.user_id === user.id),
       };
     })
   );
 
-  return NextResponse.json({ projects: enriched });
+  return NextResponse.json({ projects: enriched, migration_needed });
 }
 
 /**

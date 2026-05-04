@@ -69,15 +69,17 @@ async function findProjectForRepo(
 
   if (!repo) return null;
 
-  // Find the project linked to this repo
+  // Find the project linked to this repo (skip archived projects — F-13)
   const { data: project } = await admin
     .from("projects")
-    .select("id, name")
+    .select("id, name, is_archived")
     .eq("team_id", teamId)
     .eq("github_repo_id", repo.id)
     .maybeSingle();
 
   if (!project) return null;
+  // Don't route to archived projects
+  if ((project as Record<string, unknown>).is_archived === true) return null;
 
   return {
     projectId: project.id,
@@ -186,10 +188,10 @@ export async function detectRepoFromConversation(opts: {
     const runnerUpScore = ranked[1]?.score ?? 0;
     const confident = winner.score - runnerUpScore >= CONFIDENCE_GAP;
 
-    // Find the project linked to the winning repo
+    // Find the project linked to the winning repo (skip archived — F-13)
     const { data: project } = await admin
       .from("projects")
-      .select("id, name")
+      .select("id, name, is_archived")
       .eq("team_id", teamId)
       .eq("github_repo_id", winner.repoId)
       .maybeSingle();
@@ -198,6 +200,8 @@ export async function detectRepoFromConversation(opts: {
       // Repo is indexed but no project workspace linked yet
       return null;
     }
+    // Don't route to archived projects
+    if ((project as Record<string, unknown>).is_archived === true) return null;
 
     // Get repo info for display — use correct column name: repo_full_name
     const { data: repo } = await admin

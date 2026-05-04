@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import {
   FolderGit2, Plus, Github, Lock, Globe, Users,
   GitCommit, MessageSquare, ChevronRight, Loader2,
-  BookOpen, Sparkles,
+  BookOpen, Sparkles, Archive, Clock,
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
@@ -31,6 +31,10 @@ type Project = {
   recent_snapshots: RecentSnap[];
   is_owner: boolean;
   is_member: boolean;
+  is_archived: boolean;
+  is_dormant: boolean;
+  last_capture_at: string | null;
+  days_since_capture: number | null;
 };
 
 const TOOL_COLOR: Record<string, string> = {
@@ -76,8 +80,10 @@ export default function ProjectsPage() {
     }
   }
 
-  const repoProjects = projects.filter((p) => p.github_repo_id);
-  const manualProjects = projects.filter((p) => !p.github_repo_id);
+  const activeProjects = projects.filter((p) => !p.is_archived);
+  const archivedProjects = projects.filter((p) => p.is_archived);
+  const repoProjects = activeProjects.filter((p) => p.github_repo_id);
+  const manualProjects = activeProjects.filter((p) => !p.github_repo_id);
 
   return (
     <div className="px-6 md:px-10 py-8 max-w-5xl mx-auto">
@@ -186,6 +192,9 @@ export default function ProjectsPage() {
               </div>
             </section>
           )}
+
+          {/* Archived projects — collapsed section */}
+          <ArchivedProjectsSection projects={archivedProjects} />
         </div>
       )}
     </div>
@@ -319,7 +328,55 @@ function ProjectCard({ proj, i }: { proj: Project; i: number }) {
             </a>
           </>
         )}
+        {/* Dormant badge */}
+        {proj.is_dormant && (
+          <span className="ml-auto flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border border-gh-border text-gh-muted bg-gh-bg">
+            <Clock className="h-2.5 w-2.5" />
+            {proj.days_since_capture != null ? `Dormant ${proj.days_since_capture}d` : "Dormant"}
+          </span>
+        )}
       </div>
     </motion.div>
+  );
+}
+
+function ArchivedProjectsSection({ projects }: { projects: Project[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (projects.length === 0) return null;
+  return (
+    <section className="mt-8">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-2 mb-3 text-xs text-gh-muted hover:text-gh-text transition-colors"
+      >
+        <Archive className="h-3.5 w-3.5" />
+        <span className="font-mono uppercase tracking-wider">
+          Archived ({projects.length})
+        </span>
+        <span className="ml-1">{expanded ? "▲" : "▼"}</span>
+      </button>
+      {expanded && (
+        <div className="space-y-2 opacity-60">
+          {projects.map((proj) => (
+            <Link key={proj.id} href={`/projects/${proj.id}`}
+              className="flex items-center gap-3 px-4 py-3 rounded-lg border border-gh-border bg-gh-canvas hover:border-gh-muted/50 transition-colors">
+              <Archive className="h-4 w-4 text-gh-muted shrink-0" />
+              <span className="text-sm text-gh-text">{proj.name}</span>
+              {proj.repo && (
+                <span className="text-[10px] text-gh-muted font-mono">
+                  {proj.repo.repo_full_name}
+                </span>
+              )}
+              <span className="ml-auto text-[10px] text-gh-muted flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                {proj.last_capture_at
+                  ? `${proj.days_since_capture}d dormant`
+                  : "No captures"}
+              </span>
+            </Link>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

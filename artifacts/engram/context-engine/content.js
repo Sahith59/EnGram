@@ -188,6 +188,53 @@
       .trim();
   }
 
+  // ----- F-01: Signal scorer (mirrors lib/signal-scorer.ts) -----
+  const DECISION_TERMS_CS = [
+    "decided", "decision", "we'll use", "we're using", "we are using",
+    "going with", "chosen", "we chose", "ruled out", "not going to",
+    "won't use", "abandoned", "constraint", "requirement", "must",
+    "should not", "next step", "action item", "we need to", "plan is",
+    "architecture", "chosen approach", "the solution", "will implement",
+    "going to build", "we'll build", "settled on", "agreed on",
+  ];
+  const TECH_RE_CS = [
+    /\b(postgres|postgresql|mongodb|redis|mysql|sqlite|supabase|prisma)\b/i,
+    /\b(react|vue|angular|nextjs|next\.js|svelte|remix)\b/i,
+    /\b(typescript|javascript|python|rust|golang|java|kotlin)\b/i,
+    /\b(docker|kubernetes|k8s|aws|gcp|azure|vercel)\b/i,
+    /\b(graphql|rest|grpc|trpc|websocket|openapi)\b/i,
+    /v?\d+\.\d+(\.\d+)?/,
+    /`[^`\n]+`/,
+    /\b(api|endpoint|route|schema|migration|table|column)\b/i,
+  ];
+  const NOVELTY_CS = ["we", "our", "the project", "the system", "we decided",
+    "the team", "we are building", "we need", "we will", "our approach",
+    "in our case", "for our", "the codebase"];
+  const GENERIC_CS = ["how do i", "what is", "explain ", "tell me about",
+    "can you help", "what are the", "how does", "please write", "write me a"];
+
+  function scoreConversation(pairs) {
+    if (!pairs || pairs.length === 0) return { total: 0, label: "low", suggestion: null };
+    const fullText = pairs.map((p) => p.content).join(" ").toLowerCase();
+    const decisionHits = DECISION_TERMS_CS.filter((t) => fullText.includes(t)).length;
+    const decision = Math.min(decisionHits / 5, 1);
+    const specHits = TECH_RE_CS.filter((r) => r.test(fullText)).length;
+    const specificity = Math.min(specHits / 5, 1);
+    const n = pairs.length;
+    const lengthRaw = n >= 4 && n <= 20 ? 1 : n >= 2 && n < 4 ? 0.6 : n > 20 && n <= 40 ? 0.8 : n === 1 ? 0.2 : 0.5;
+    const noveltyHits = NOVELTY_CS.filter((t) => fullText.includes(t)).length;
+    const genericHits = GENERIC_CS.filter((t) => fullText.includes(t)).length;
+    const noveltyRaw = Math.max(0, Math.min(1, noveltyHits / 4 - genericHits * 0.15));
+    const total = Math.max(0, Math.min(100, Math.round(
+      0.35 * decision * 100 + 0.25 * specificity * 100 + 0.20 * lengthRaw * 100 + 0.20 * noveltyRaw * 100
+    )));
+    const label = total >= 65 ? "high" : total >= 35 ? "medium" : "low";
+    const suggestion = label === "high"
+      ? "Decisions detected — worth capturing"
+      : label === "medium" ? "Some useful context — consider capturing" : null;
+    return { total, label, suggestion };
+  }
+
   function detectLimitPhrase() {
     const text = document.body?.innerText?.toLowerCase() ?? "";
     return LIMIT_PHRASES.some((p) => text.includes(p));
@@ -915,13 +962,14 @@
           tryCapture({ reason: "manual", verbose: true, minPairs: 1 }).then(sendResponse);
           return true;
         }
-        // GET_PAIRS — read-only DOM extraction for checkpoint (no capture side-effects)
+        // GET_PAIRS — read-only DOM extraction for checkpoint + signal scoring
         if (msg?.type === "GET_PAIRS") {
           try {
             const pairs = extractPairs();
-            sendResponse({ ok: true, pairs, tool: TOOL });
+            const score = scoreConversation(pairs);
+            sendResponse({ ok: true, pairs, tool: TOOL, score });
           } catch (e) {
-            sendResponse({ ok: false, error: String(e), pairs: [] });
+            sendResponse({ ok: false, error: String(e), pairs: [], score: null });
           }
           return false;
         }
