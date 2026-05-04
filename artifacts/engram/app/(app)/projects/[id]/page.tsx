@@ -9,6 +9,7 @@ import {
   Crown, UserPlus, Trash2, Copy, Check, Send, Loader2,
   ChevronRight, X, GitBranch, Shield, AlertTriangle,
   CheckCircle2, XCircle, ChevronDown, Zap, RefreshCw, Archive,
+  Target, FileCode, History, AlertCircle, Info, ChevronUp,
 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
@@ -100,7 +101,7 @@ const TOOL_LABEL: Record<string, string> = { chatgpt: "ChatGPT", claude: "Claude
 const TOOL_DOT: Record<string, string> = { chatgpt: "bg-tool-chatgpt", claude: "bg-tool-claude", gemini: "bg-tool-gemini", other: "bg-gh-muted" };
 const TOOL_TEXT: Record<string, string> = { chatgpt: "text-tool-chatgpt", claude: "text-tool-claude", gemini: "text-tool-gemini" };
 
-type Tab = "feed" | "ask" | "brief" | "commits" | "members";
+type Tab = "feed" | "ask" | "brief" | "commits" | "blast" | "members";
 
 /* ── F-13: Archive/Unarchive buttons ────────────────────── */
 function ArchiveButton({ projectId, onDone }: { projectId: string; onDone: () => void }) {
@@ -245,8 +246,8 @@ export default function ProjectWorkspacePage() {
 
           {/* ── Tabs ──────────────────────────────────────── */}
           <div className="flex items-center gap-1 mt-4 -mb-px">
-            {(["feed", "ask", "brief", "commits", "members"] as Tab[]).map((tab) => {
-              const hidden = (tab === "commits" && !project.github_repo_id);
+            {(["feed", "ask", "brief", "commits", "blast", "members"] as Tab[]).map((tab) => {
+              const hidden = ((tab === "commits" || tab === "blast") && !project.github_repo_id);
               if (hidden) return null;
               return (
                 <button key={tab}
@@ -261,8 +262,9 @@ export default function ProjectWorkspacePage() {
                   {tab === "ask" && <Sparkles className="h-3.5 w-3.5" />}
                   {tab === "brief" && <Shield className="h-3.5 w-3.5" />}
                   {tab === "commits" && <GitCommit className="h-3.5 w-3.5" />}
+                  {tab === "blast" && <Target className="h-3.5 w-3.5" />}
                   {tab === "members" && <Users className="h-3.5 w-3.5" />}
-                  {tab === "brief" ? "Trust Brief" : tab === "commits" ? "Commits" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  {tab === "brief" ? "Trust Brief" : tab === "commits" ? "Commits" : tab === "blast" ? "Blast Radius" : tab.charAt(0).toUpperCase() + tab.slice(1)}
                   {tab === "feed" && snapshots.length > 0 && (
                     <span className="text-[10px] bg-gh-canvas border border-gh-border px-1.5 rounded-full text-gh-muted">
                       {snapshots.length}
@@ -344,6 +346,11 @@ export default function ProjectWorkspacePage() {
                 focusedCommitSha={focusedCommitSha}
                 onFocusHandled={() => setFocusedCommitSha(null)}
               />
+            </motion.div>
+          )}
+          {activeTab === "blast" && project.github_repo_id && (
+            <motion.div key="blast" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+              <BlastRadiusTab projectId={projectId} />
             </motion.div>
           )}
           {activeTab === "members" && (
@@ -1867,6 +1874,572 @@ function MembersTab({ projectId, members, isOwner, onRefresh, repo }: {
                 </motion.div>
               );
             })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════
+   BLAST RADIUS TAB
+══════════════════════════════════════════════════════════ */
+
+interface BlastFile {
+  file_path: string;
+  impact_level: "Direct" | "Transitive" | "Indirect";
+  hops: number;
+  edge_type: string;
+  via_file: string;
+  via_symbol: string | null;
+}
+
+interface BlastSnapshot {
+  id: string;
+  title: string;
+  summary: string | null;
+  decision: string | null;
+  created_at: string;
+  ai_tool: string;
+  relevance_score: number;
+  source: "commit_link" | "semantic_search" | "both";
+}
+
+interface BlastResult {
+  query_id: string | null;
+  risk_level: "Low" | "Medium" | "High" | "Critical";
+  risk_summary: string;
+  files_to_update: string[];
+  stats: {
+    edges_traversed: number;
+    links_found: number;
+    affected_count: number;
+    snapshots_count: number;
+  };
+}
+
+interface PastQuery {
+  id: string;
+  query_file: string;
+  change_description: string;
+  risk_level: string | null;
+  risk_summary: string | null;
+  ast_edges_traversed: number;
+  semantic_links_found: number;
+  created_at: string;
+  affected_files: BlastFile[];
+  intent_snapshots: BlastSnapshot[];
+}
+
+type BlastPhase = "idle" | "traversing" | "intenting" | "synthesizing" | "done" | "error";
+
+const RISK_COLORS: Record<string, string> = {
+  Low:      "text-green-400 bg-green-400/10 border-green-400/30",
+  Medium:   "text-yellow-400 bg-yellow-400/10 border-yellow-400/30",
+  High:     "text-orange-400 bg-orange-400/10 border-orange-400/30",
+  Critical: "text-red-400 bg-red-400/10 border-red-400/30",
+};
+
+const IMPACT_COLORS: Record<string, string> = {
+  Direct:     "text-red-400 bg-red-400/10 border-red-400/30",
+  Transitive: "text-orange-400 bg-orange-400/10 border-orange-400/30",
+  Indirect:   "text-yellow-400 bg-yellow-400/10 border-yellow-400/30",
+};
+
+function BlastRadiusTab({ projectId }: { projectId: string }) {
+  const [filePath, setFilePath] = useState("");
+  const [changeDesc, setChangeDesc] = useState("");
+  const [fileOptions, setFileOptions] = useState<string[]>([]);
+  const [showAutocomplete, setShowAutocomplete] = useState(false);
+  const [phase, setPhase] = useState<BlastPhase>("idle");
+  const [affectedFiles, setAffectedFiles] = useState<BlastFile[]>([]);
+  const [intentSnapshots, setIntentSnapshots] = useState<BlastSnapshot[]>([]);
+  const [streamText, setStreamText] = useState("");
+  const [result, setResult] = useState<BlastResult | null>(null);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [pastQueries, setPastQueries] = useState<PastQuery[]>([]);
+  const [pastLoading, setPastLoading] = useState(true);
+  const [expandedPast, setExpandedPast] = useState<string | null>(null);
+  const [showPast, setShowPast] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    loadPastQueries();
+  }, [projectId]);
+
+  async function loadPastQueries() {
+    setPastLoading(true);
+    try {
+      const r = await fetch(`/api/projects/${projectId}/blast-radius`);
+      if (r.ok) {
+        const d = await r.json();
+        setPastQueries(d.queries ?? []);
+      }
+    } finally {
+      setPastLoading(false);
+    }
+  }
+
+  function handleFileInputChange(val: string) {
+    setFilePath(val);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (val.trim().length < 2) { setFileOptions([]); setShowAutocomplete(false); return; }
+    debounceRef.current = setTimeout(async () => {
+      const r = await fetch(`/api/projects/${projectId}/blast-radius/files?q=${encodeURIComponent(val)}`);
+      if (r.ok) {
+        const d = await r.json();
+        setFileOptions(d.files ?? []);
+        setShowAutocomplete((d.files ?? []).length > 0);
+      }
+    }, 250);
+  }
+
+  async function runAnalysis() {
+    if (!filePath.trim() || !changeDesc.trim()) return;
+    setPhase("traversing");
+    setAffectedFiles([]);
+    setIntentSnapshots([]);
+    setStreamText("");
+    setResult(null);
+    setErrorMsg("");
+
+    try {
+      const response = await fetch(`/api/projects/${projectId}/blast-radius`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_path: filePath.trim(), change_description: changeDesc.trim() }),
+      });
+
+      if (!response.ok || !response.body) {
+        setPhase("error");
+        setErrorMsg("Request failed. Check the file path and try again.");
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+
+        for (const raw of events) {
+          const lines = raw.split("\n");
+          const eventLine = lines.find((l) => l.startsWith("event: "));
+          const dataLine = lines.find((l) => l.startsWith("data: "));
+          if (!eventLine || !dataLine) continue;
+
+          const eventName = eventLine.slice(7).trim();
+          let data: unknown;
+          try { data = JSON.parse(dataLine.slice(6)); } catch { continue; }
+
+          if (eventName === "affected_files") {
+            const d = data as { files: BlastFile[] };
+            setAffectedFiles(d.files ?? []);
+            setPhase("intenting");
+          } else if (eventName === "intent_snapshots") {
+            const d = data as { snapshots: BlastSnapshot[] };
+            setIntentSnapshots(d.snapshots ?? []);
+            setPhase("synthesizing");
+          } else if (eventName === "token") {
+            const d = data as { text: string };
+            setStreamText((prev) => prev + d.text);
+          } else if (eventName === "result") {
+            setResult(data as BlastResult);
+            setPhase("done");
+            loadPastQueries();
+          } else if (eventName === "error") {
+            const d = data as { message: string };
+            setPhase("error");
+            setErrorMsg(d.message ?? "Analysis failed");
+          }
+        }
+      }
+    } catch {
+      setPhase("error");
+      setErrorMsg("Connection error. Please try again.");
+    }
+  }
+
+  function buildMarkdown(): string {
+    if (!result) return "";
+    const lines: string[] = [
+      "## Blast Radius Analysis",
+      "",
+      `**File changed:** \`${filePath}\``,
+      `**Change:** ${changeDesc}`,
+      `**Risk level:** ${result.risk_level}`,
+      "",
+      "### Affected Files",
+      "",
+      "| File | Impact | Hops |",
+      "|------|--------|------|",
+      ...affectedFiles.slice(0, 20).map((f) =>
+        `| \`${f.file_path}\` | ${f.impact_level} | ${f.hops} |`
+      ),
+      "",
+      "### Historical Intent",
+      "",
+      ...intentSnapshots.map((s) => [
+        `**${s.title}** (${new Date(s.created_at).toLocaleDateString()})`,
+        s.decision ? `> Decision: ${s.decision}` : "",
+        s.summary ? `> ${s.summary.slice(0, 200)}` : "",
+        "",
+      ].filter(Boolean).join("\n")),
+      "### Risk Summary",
+      "",
+      result.risk_summary,
+      "",
+      "### Files to Update",
+      "",
+      ...result.files_to_update.map((f) => `- \`${f}\``),
+      "",
+      `---`,
+      `*Generated by ENGRAM Blast Radius Engine — ${new Date().toLocaleString()}*`,
+    ];
+    return lines.join("\n");
+  }
+
+  async function copyMarkdown() {
+    await navigator.clipboard.writeText(buildMarkdown());
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  const isRunning = phase === "traversing" || phase === "intenting" || phase === "synthesizing";
+
+  return (
+    <div className="space-y-6">
+      {/* ── Header ────────────────────────────────────────── */}
+      <div className="flex items-start gap-3">
+        <div className="h-10 w-10 rounded-lg flex items-center justify-center bg-orange-500/10 border border-orange-500/20 shrink-0">
+          <Target className="h-5 w-5 text-orange-400" />
+        </div>
+        <div>
+          <h2 className="text-base font-semibold text-gh-text">Blast Radius Engine</h2>
+          <p className="text-xs text-gh-muted mt-0.5">
+            Discover which files break and which AI decisions explain why — before you make the change.
+          </p>
+        </div>
+      </div>
+
+      {/* ── Query form ────────────────────────────────────── */}
+      <div className="rounded-lg border border-gh-border bg-gh-canvas p-5 space-y-4">
+        <div className="space-y-1 relative">
+          <label className="text-xs font-medium text-gh-muted uppercase tracking-wider">File to change</label>
+          <div className="relative">
+            <FileCode className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gh-muted" />
+            <input
+              ref={fileInputRef}
+              type="text"
+              value={filePath}
+              onChange={(e) => handleFileInputChange(e.target.value)}
+              onFocus={() => { if (fileOptions.length > 0) setShowAutocomplete(true); }}
+              onBlur={() => setTimeout(() => setShowAutocomplete(false), 150)}
+              placeholder="src/auth/middleware.ts"
+              className="w-full pl-9 pr-3 py-2 rounded-md border border-gh-border bg-gh-bg text-sm text-gh-text placeholder:text-gh-muted/50 focus:outline-none focus:ring-1 focus:ring-engram/50 font-mono"
+              disabled={isRunning}
+            />
+          </div>
+          {showAutocomplete && (
+            <div className="absolute z-30 mt-1 w-full rounded-md border border-gh-border bg-gh-canvas shadow-lg">
+              {fileOptions.map((f) => (
+                <button key={f} onMouseDown={() => { setFilePath(f); setShowAutocomplete(false); }}
+                  className="w-full text-left px-3 py-1.5 text-xs font-mono text-gh-text hover:bg-gh-bg truncate">
+                  {f}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-gh-muted uppercase tracking-wider">What are you changing?</label>
+          <textarea
+            rows={3}
+            value={changeDesc}
+            onChange={(e) => setChangeDesc(e.target.value)}
+            placeholder="e.g. Change JWT expiration from 15 minutes to 7 days"
+            className="w-full px-3 py-2 rounded-md border border-gh-border bg-gh-bg text-sm text-gh-text placeholder:text-gh-muted/50 focus:outline-none focus:ring-1 focus:ring-engram/50 resize-none"
+            disabled={isRunning}
+          />
+        </div>
+
+        <button
+          onClick={runAnalysis}
+          disabled={isRunning || !filePath.trim() || !changeDesc.trim()}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors",
+            isRunning || !filePath.trim() || !changeDesc.trim()
+              ? "bg-gh-border text-gh-muted cursor-not-allowed"
+              : "bg-orange-500/90 hover:bg-orange-500 text-white"
+          )}>
+          {isRunning
+            ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Analysing…</>
+            : <><Zap className="h-3.5 w-3.5" /> Analyse Blast Radius</>}
+        </button>
+      </div>
+
+      {/* ── Progress indicator ────────────────────────────── */}
+      {isRunning && (
+        <div className="flex items-center gap-6 text-xs text-gh-muted px-1">
+          {[
+            { key: "traversing", label: "Traversing AST graph" },
+            { key: "intenting",  label: "Retrieving intent" },
+            { key: "synthesizing", label: "Synthesising with Claude" },
+          ].map(({ key, label }) => {
+            const phases = ["traversing", "intenting", "synthesizing", "done"];
+            const activeIdx = phases.indexOf(phase);
+            const thisIdx = phases.indexOf(key);
+            const isActive = key === phase;
+            const isDone = thisIdx < activeIdx;
+            return (
+              <span key={key} className={cn("flex items-center gap-1.5 transition-colors",
+                isDone ? "text-green-400" : isActive ? "text-gh-text" : "text-gh-muted/40")}>
+                {isDone ? <CheckCircle2 className="h-3 w-3" /> :
+                 isActive ? <Loader2 className="h-3 w-3 animate-spin" /> :
+                 <div className="h-3 w-3 rounded-full border border-gh-border" />}
+                {label}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Error state ───────────────────────────────────── */}
+      {phase === "error" && (
+        <div className="flex items-center gap-2 px-4 py-3 rounded-lg border border-red-400/30 bg-red-400/5 text-sm text-red-400">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          {errorMsg}
+        </div>
+      )}
+
+      {/* ── Results ───────────────────────────────────────── */}
+      {(affectedFiles.length > 0 || intentSnapshots.length > 0 || streamText || result) && (
+        <div className="space-y-4">
+          {/* Affected Files */}
+          {affectedFiles.length > 0 && (
+            <div className="rounded-lg border border-gh-border bg-gh-canvas overflow-hidden">
+              <div className="px-4 py-3 border-b border-gh-border flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-orange-400" />
+                  <span className="text-sm font-medium text-gh-text">Affected Files</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-orange-400/10 border border-orange-400/25 text-orange-400">
+                    {affectedFiles.length} file{affectedFiles.length !== 1 ? "s" : ""}
+                  </span>
+                </div>
+              </div>
+              <div className="divide-y divide-gh-border">
+                {affectedFiles.slice(0, 30).map((f) => (
+                  <div key={f.file_path} className="flex items-center gap-3 px-4 py-2.5">
+                    <span className={cn("text-[10px] px-1.5 py-0.5 rounded border shrink-0", IMPACT_COLORS[f.impact_level])}>
+                      {f.impact_level}
+                    </span>
+                    <code className="text-xs text-gh-text flex-1 min-w-0 truncate">{f.file_path}</code>
+                    <span className="text-[10px] text-gh-muted shrink-0 hidden sm:block">
+                      via <code className="text-engram-light">{f.via_file.split("/").pop()}</code>
+                      {f.via_symbol ? ` · ${f.via_symbol}` : ""}
+                    </span>
+                    <span className="text-[10px] text-gh-muted shrink-0">{f.hops}h</span>
+                  </div>
+                ))}
+                {affectedFiles.length > 30 && (
+                  <p className="px-4 py-2 text-xs text-gh-muted">…and {affectedFiles.length - 30} more</p>
+                )}
+              </div>
+              {affectedFiles.length === 0 && (
+                <div className="flex items-center gap-2 px-4 py-4 text-xs text-gh-muted">
+                  <Info className="h-3.5 w-3.5 shrink-0" />
+                  No AST dependents found for this file. It may not be indexed yet, or the file has no importers.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Historical Intent */}
+          {(intentSnapshots.length > 0 || phase === "done") && (
+            <div className="rounded-lg border border-gh-border bg-gh-canvas overflow-hidden">
+              <div className="px-4 py-3 border-b border-gh-border flex items-center gap-2">
+                <History className="h-4 w-4 text-engram-light" />
+                <span className="text-sm font-medium text-gh-text">Historical Intent</span>
+                {intentSnapshots.length > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-engram/10 border border-engram/25 text-engram-light">
+                    {intentSnapshots.length} conversation{intentSnapshots.length !== 1 ? "s" : ""}
+                  </span>
+                )}
+              </div>
+              {intentSnapshots.length === 0 ? (
+                <div className="flex items-center gap-2 px-4 py-4 text-xs text-gh-muted">
+                  <Info className="h-3.5 w-3.5 shrink-0" />
+                  No AI conversations found for this file or change. Capture more sessions to build ENGRAM memory.
+                </div>
+              ) : (
+                <div className="divide-y divide-gh-border">
+                  {intentSnapshots.map((s) => (
+                    <div key={s.id} className="px-4 py-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={cn("text-[10px] font-mono uppercase tracking-wider", TOOL_TEXT[s.ai_tool] ?? "text-gh-muted")}>
+                          {TOOL_LABEL[s.ai_tool] ?? s.ai_tool}
+                        </span>
+                        <span className="text-[10px] text-gh-muted">
+                          {new Date(s.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                        </span>
+                        <span className={cn("text-[10px] px-1 py-0.5 rounded",
+                          s.source === "both" ? "text-engram-light bg-engram/10" :
+                          s.source === "commit_link" ? "text-orange-400/80 bg-orange-400/5" :
+                          "text-gh-muted bg-gh-bg")}>
+                          {s.source === "both" ? "commit + semantic" : s.source === "commit_link" ? "commit linked" : "semantic"}
+                        </span>
+                      </div>
+                      <p className="text-sm font-medium text-gh-text leading-snug">{s.title}</p>
+                      {s.decision && (
+                        <div className="mt-1 flex items-start gap-1">
+                          <span className="text-[10px] font-mono text-engram-light shrink-0 mt-0.5">DECISION</span>
+                          <p className="text-xs text-gh-muted">{s.decision}</p>
+                        </div>
+                      )}
+                      {s.summary && !s.decision && (
+                        <p className="text-xs text-gh-muted mt-1 line-clamp-2">{s.summary}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Risk Summary */}
+          {(streamText || result) && (
+            <div className="rounded-lg border border-gh-border bg-gh-canvas overflow-hidden">
+              <div className="px-4 py-3 border-b border-gh-border flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Shield className="h-4 w-4 text-gh-muted" />
+                  <span className="text-sm font-medium text-gh-text">Risk Summary</span>
+                  {result && (
+                    <span className={cn("text-[10px] px-1.5 py-0.5 rounded border font-medium", RISK_COLORS[result.risk_level])}>
+                      {result.risk_level}
+                    </span>
+                  )}
+                </div>
+                {result && (
+                  <button onClick={copyMarkdown}
+                    className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border border-gh-border text-gh-muted hover:text-gh-text hover:border-gh-muted/50 transition-colors">
+                    {copied ? <><Check className="h-3 w-3 text-green-400" /> Copied!</> : <><Copy className="h-3 w-3" /> Copy as Markdown</>}
+                  </button>
+                )}
+              </div>
+              <div className="px-4 py-4">
+                <p className="text-sm text-gh-text leading-relaxed whitespace-pre-wrap">
+                  {streamText || result?.risk_summary}
+                </p>
+                {phase === "synthesizing" && (
+                  <span className="inline-block w-1 h-3.5 bg-engram ml-0.5 animate-pulse" />
+                )}
+                {result?.files_to_update && result.files_to_update.length > 0 && (
+                  <div className="mt-4 pt-4 border-t border-gh-border">
+                    <p className="text-xs font-medium text-gh-muted uppercase tracking-wider mb-2">Files to update</p>
+                    <div className="space-y-1">
+                      {result.files_to_update.map((f) => (
+                        <div key={f} className="flex items-center gap-2">
+                          <span className="h-1 w-1 rounded-full bg-orange-400 shrink-0" />
+                          <code className="text-xs text-gh-text">{f}</code>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {result && (
+                  <div className="mt-4 pt-3 border-t border-gh-border flex items-center gap-4 text-[10px] text-gh-muted">
+                    <span>{result.stats.edges_traversed} AST edges traversed</span>
+                    <span>{result.stats.links_found} semantic link{result.stats.links_found !== 1 ? "s" : ""}</span>
+                    <span>{result.stats.affected_count} file{result.stats.affected_count !== 1 ? "s" : ""} affected</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Past Analyses ─────────────────────────────────── */}
+      <div className="rounded-lg border border-gh-border bg-gh-canvas overflow-hidden">
+        <button
+          onClick={() => setShowPast((p) => !p)}
+          className="w-full flex items-center justify-between px-4 py-3 hover:bg-gh-bg transition-colors">
+          <div className="flex items-center gap-2 text-sm font-medium text-gh-muted">
+            <History className="h-4 w-4" />
+            Past Analyses
+            {!pastLoading && pastQueries.length > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gh-bg border border-gh-border text-gh-muted">
+                {pastQueries.length}
+              </span>
+            )}
+          </div>
+          {showPast ? <ChevronUp className="h-4 w-4 text-gh-muted" /> : <ChevronDown className="h-4 w-4 text-gh-muted" />}
+        </button>
+        {showPast && (
+          <div className="border-t border-gh-border divide-y divide-gh-border">
+            {pastLoading ? (
+              <div className="px-4 py-6 flex justify-center">
+                <Loader2 className="h-5 w-5 animate-spin text-gh-muted" />
+              </div>
+            ) : pastQueries.length === 0 ? (
+              <p className="px-4 py-4 text-sm text-gh-muted">No past analyses yet.</p>
+            ) : (
+              pastQueries.map((q) => (
+                <div key={q.id}>
+                  <button
+                    onClick={() => setExpandedPast(expandedPast === q.id ? null : q.id)}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gh-bg transition-colors">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        {q.risk_level && (
+                          <span className={cn("text-[10px] px-1.5 py-0.5 rounded border", RISK_COLORS[q.risk_level])}>
+                            {q.risk_level}
+                          </span>
+                        )}
+                        <code className="text-xs text-engram-light truncate">{q.query_file}</code>
+                      </div>
+                      <p className="text-xs text-gh-muted truncate">{q.change_description}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[10px] text-gh-muted">
+                        {new Date(q.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                      </span>
+                      <ChevronDown className={cn("h-3.5 w-3.5 text-gh-muted transition-transform",
+                        expandedPast === q.id && "rotate-180")} />
+                    </div>
+                  </button>
+                  {expandedPast === q.id && (
+                    <div className="px-4 pb-4 space-y-3 bg-gh-bg/30">
+                      {q.risk_summary && (
+                        <p className="text-xs text-gh-muted leading-relaxed">{q.risk_summary.slice(0, 400)}</p>
+                      )}
+                      <div className="flex items-center gap-4 text-[10px] text-gh-muted">
+                        <span>{(q.affected_files ?? []).length} files affected</span>
+                        <span>{q.ast_edges_traversed} AST edges</span>
+                        <span>{q.semantic_links_found} semantic links</span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setFilePath(q.query_file);
+                          setChangeDesc(q.change_description);
+                        }}
+                        className="text-xs text-engram-light hover:underline">
+                        Re-run this analysis →
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
           </div>
         )}
       </div>
