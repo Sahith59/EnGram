@@ -76,3 +76,33 @@ export function isEncrypted(value: string): boolean {
   // All three parts must be valid hex strings
   return parts.length === 3 && parts.every((p) => /^[0-9a-f]+$/i.test(p));
 }
+
+/**
+ * Normalise a GitHub App RSA private key from whatever format the env var
+ * holds it in:
+ *   - Proper PEM with real newlines (ideal)
+ *   - Escaped "\n" literals (common when set via shell)
+ *   - Single line with spaces separating the base-64 body (common when
+ *     pasted directly into a Replit secret without newlines)
+ *
+ * Returns a properly-formatted PEM string ready for Node's `createSign`.
+ */
+export function parseGitHubPrivateKey(raw: string): string {
+  // Already has real newlines — return as-is
+  if (raw.includes("\n")) return raw;
+
+  // Has escaped \n literals — replace them
+  if (raw.includes("\\n")) return raw.replace(/\\n/g, "\n");
+
+  // Single-line with spaces: reconstruct PEM with 64-char base64 lines
+  const m = raw.match(/-----BEGIN ([A-Z ]+)-----(.+?)-----END \1-----/s);
+  if (m) {
+    const label = m[1];
+    const b64 = m[2].trim().replace(/\s+/g, "");
+    const lines = b64.match(/.{1,64}/g) ?? [];
+    return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
+  }
+
+  // Unknown format — return raw and let the caller fail with a clear error
+  return raw;
+}

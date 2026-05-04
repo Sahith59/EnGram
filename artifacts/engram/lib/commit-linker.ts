@@ -13,7 +13,7 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { embedText } from "@/lib/embeddings";
-import { decryptToken, isEncrypted } from "@/lib/oauth-crypto";
+import { decryptToken, isEncrypted, parseGitHubPrivateKey } from "@/lib/oauth-crypto";
 import { createSign } from "crypto";
 
 const LINK_THRESHOLD = 0.40;
@@ -66,7 +66,7 @@ async function getGitHubToken(
       .maybeSingle();
     if (row?.installation_id) {
       try {
-        const jwt = generateJwt(appId, rawKey.replace(/\\n/g, "\n"));
+        const jwt = generateJwt(appId, parseGitHubPrivateKey(rawKey));
         const res = await fetch(`${GH_API}/app/installations/${row.installation_id}/access_tokens`, {
           method: "POST",
           headers: {

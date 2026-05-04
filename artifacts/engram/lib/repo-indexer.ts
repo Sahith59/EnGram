@@ -17,7 +17,7 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseAstEdges, analyzeFileStructure } from "@/lib/ast-parser";
-import { decryptToken, isEncrypted } from "@/lib/oauth-crypto";
+import { decryptToken, isEncrypted, parseGitHubPrivateKey } from "@/lib/oauth-crypto";
 import { createSign } from "crypto";
 
 const GH_API = "https://api.github.com";
@@ -96,9 +96,9 @@ export async function getOAuthToken(teamId: string, provider: "github" | "gitlab
     // GitHub App installation flow: generate fresh installation token from installation_id
     if (provider === "github" && oauthRow.installation_id) {
       const appId = process.env.GITHUB_APP_ID;
-      const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
-      if (appId && privateKey) {
-        const token = await getInstallationAccessToken(appId, privateKey, oauthRow.installation_id);
+      const privateKeyRaw = process.env.GITHUB_APP_PRIVATE_KEY;
+      if (appId && privateKeyRaw) {
+        const token = await getInstallationAccessToken(appId, parseGitHubPrivateKey(privateKeyRaw), oauthRow.installation_id);
         if (token) return token;
       }
     }

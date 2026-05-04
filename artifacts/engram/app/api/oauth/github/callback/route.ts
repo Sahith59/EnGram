@@ -18,7 +18,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { encryptToken } from "@/lib/oauth-crypto";
+import { encryptToken, parseGitHubPrivateKey } from "@/lib/oauth-crypto";
 import { createSign } from "crypto";
 
 const GH_API = "https://api.github.com";
@@ -158,10 +158,11 @@ export async function GET(request: NextRequest) {
   }
 
   const appId = process.env.GITHUB_APP_ID;
-  const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
-  if (!appId || !privateKey) {
+  const privateKeyRaw = process.env.GITHUB_APP_PRIVATE_KEY;
+  if (!appId || !privateKeyRaw) {
     return NextResponse.redirect(`${appUrl}/settings?tab=integrations&error=not_configured`);
   }
+  const privateKey = parseGitHubPrivateKey(privateKeyRaw);
 
   // Exchange installation_id for an installation access token
   const tokenResult = await getInstallationAccessToken(appId, privateKey, installationId);

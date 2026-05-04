@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
-import { decryptToken, isEncrypted } from "@/lib/oauth-crypto";
+import { decryptToken, isEncrypted, parseGitHubPrivateKey } from "@/lib/oauth-crypto";
 import { createSign } from "crypto";
 
 const GH_API = "https://api.github.com";
@@ -47,7 +47,7 @@ async function getGitHubToken(admin: ReturnType<typeof createAdminClient>, teamI
     const { data: tokenRow } = await admin.from("github_oauth_tokens").select("installation_id")
       .eq("team_id", teamId).eq("provider", "github").maybeSingle();
     if (tokenRow?.installation_id) {
-      const token = await getInstallationToken(appId, privateKeyRaw.replace(/\\n/g, "\n"), tokenRow.installation_id);
+      const token = await getInstallationToken(appId, parseGitHubPrivateKey(privateKeyRaw), tokenRow.installation_id);
       if (token) return token;
     }
   }
