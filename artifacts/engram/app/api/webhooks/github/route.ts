@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { indexChangedFiles } from "@/lib/repo-indexer";
+import { linkCommitToConversations } from "@/lib/commit-linker";
 import { createHmac, timingSafeEqual } from "crypto";
 
 function verifyGitHubSignature(body: string, signature: string | null): boolean {
@@ -132,17 +133,31 @@ export async function POST(request: NextRequest) {
       .in("file_path", removedArr);
   }
 
-  // Run indexing in background (non-blocking — webhook must respond in < 10s)
-  indexChangedFiles({
-    repoId: repo.id,
-    teamId: repo.team_id,
-    repoFullName,
-    provider: "github",
-    commitSha,
-    commitMessage,
-    commitTimestamp,
-    changedFiles: Array.from(changedFiles),
-  }).catch((err) => console.error("[webhook/github] indexing error:", err));
+  // Run AST indexing then semantic linking in background (non-blocking)
+  (async () => {
+    try {
+      await indexChangedFiles({
+        repoId: repo.id,
+        teamId: repo.team_id,
+        repoFullName,
+        provider: "github",
+        commitSha,
+        commitMessage,
+        commitTimestamp,
+        changedFiles: Array.from(changedFiles),
+      });
+    } catch (err) {
+      console.error("[webhook/github] indexing error:", err);
+    }
+    linkCommitToConversations({
+      repoId: repo.id,
+      teamId: repo.team_id,
+      commitSha,
+      commitMessage,
+      commitTimestamp,
+      changedFiles: Array.from(changedFiles),
+    }).catch((err) => console.error("[webhook/github] commit-linker error:", err));
+  })();
 
   return NextResponse.json({
     ok: true,

@@ -23,10 +23,12 @@ type Repo = {
 };
 type MemberProfile = { id: string; full_name: string | null; display_name: string | null; avatar_url: string | null; email: string | null };
 type Member = { id: string; user_id: string; role: string; joined_at: string; profile: MemberProfile | null; is_self: boolean };
+type SnapshotSemanticLink = { commit_sha: string; committed_at: string | null };
 type Snapshot = {
   id: string; title: string; summary: string | null; ai_tool: string;
   tags: string[]; decision: string | null; created_at: string;
   visibility: string; author_handle: string | null;
+  semantic_links?: SnapshotSemanticLink[];
 };
 type Project = {
   id: string; name: string; description: string | null;
@@ -98,7 +100,7 @@ const TOOL_LABEL: Record<string, string> = { chatgpt: "ChatGPT", claude: "Claude
 const TOOL_DOT: Record<string, string> = { chatgpt: "bg-tool-chatgpt", claude: "bg-tool-claude", gemini: "bg-tool-gemini", other: "bg-gh-muted" };
 const TOOL_TEXT: Record<string, string> = { chatgpt: "text-tool-chatgpt", claude: "text-tool-claude", gemini: "text-tool-gemini" };
 
-type Tab = "feed" | "ask" | "brief" | "members";
+type Tab = "feed" | "ask" | "brief" | "commits" | "members";
 
 /* ── F-13: Archive/Unarchive buttons ────────────────────── */
 function ArchiveButton({ projectId, onDone }: { projectId: string; onDone: () => void }) {
@@ -242,32 +244,37 @@ export default function ProjectWorkspacePage() {
 
           {/* ── Tabs ──────────────────────────────────────── */}
           <div className="flex items-center gap-1 mt-4 -mb-px">
-            {(["feed", "ask", "brief", "members"] as Tab[]).map((tab) => (
-              <button key={tab}
-                onClick={() => switchTab(tab)}
-                className={cn(
-                  "flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors",
-                  activeTab === tab
-                    ? "border-engram text-gh-text"
-                    : "border-transparent text-gh-muted hover:text-gh-text hover:border-gh-border"
-                )}>
-                {tab === "feed" && <MessageSquare className="h-3.5 w-3.5" />}
-                {tab === "ask" && <Sparkles className="h-3.5 w-3.5" />}
-                {tab === "brief" && <Shield className="h-3.5 w-3.5" />}
-                {tab === "members" && <Users className="h-3.5 w-3.5" />}
-                {tab === "brief" ? "Trust Brief" : tab.charAt(0).toUpperCase() + tab.slice(1)}
-                {tab === "feed" && snapshots.length > 0 && (
-                  <span className="text-[10px] bg-gh-canvas border border-gh-border px-1.5 rounded-full text-gh-muted">
-                    {snapshots.length}
-                  </span>
-                )}
-                {tab === "members" && members.length > 0 && (
-                  <span className="text-[10px] bg-gh-canvas border border-gh-border px-1.5 rounded-full text-gh-muted">
-                    {members.length}
-                  </span>
-                )}
-              </button>
-            ))}
+            {(["feed", "ask", "brief", "commits", "members"] as Tab[]).map((tab) => {
+              const hidden = (tab === "commits" && !project.github_repo_id);
+              if (hidden) return null;
+              return (
+                <button key={tab}
+                  onClick={() => switchTab(tab)}
+                  className={cn(
+                    "flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors",
+                    activeTab === tab
+                      ? "border-engram text-gh-text"
+                      : "border-transparent text-gh-muted hover:text-gh-text hover:border-gh-border"
+                  )}>
+                  {tab === "feed" && <MessageSquare className="h-3.5 w-3.5" />}
+                  {tab === "ask" && <Sparkles className="h-3.5 w-3.5" />}
+                  {tab === "brief" && <Shield className="h-3.5 w-3.5" />}
+                  {tab === "commits" && <GitCommit className="h-3.5 w-3.5" />}
+                  {tab === "members" && <Users className="h-3.5 w-3.5" />}
+                  {tab === "brief" ? "Trust Brief" : tab === "commits" ? "Commits" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  {tab === "feed" && snapshots.length > 0 && (
+                    <span className="text-[10px] bg-gh-canvas border border-gh-border px-1.5 rounded-full text-gh-muted">
+                      {snapshots.length}
+                    </span>
+                  )}
+                  {tab === "members" && members.length > 0 && (
+                    <span className="text-[10px] bg-gh-canvas border border-gh-border px-1.5 rounded-full text-gh-muted">
+                      {members.length}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -315,7 +322,7 @@ export default function ProjectWorkspacePage() {
         <AnimatePresence mode="wait">
           {activeTab === "feed" && (
             <motion.div key="feed" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-              <FeedTab snapshots={snapshots} projectName={project.name} projectId={projectId} />
+              <FeedTab snapshots={snapshots} projectName={project.name} projectId={projectId} onGoToCommit={(sha) => switchTab("commits")} />
             </motion.div>
           )}
           {activeTab === "ask" && (
@@ -326,6 +333,15 @@ export default function ProjectWorkspacePage() {
           {activeTab === "brief" && (
             <motion.div key="brief" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
               <BriefTab projectId={projectId} projectName={project.name} captureCount={project.snapshot_count} />
+            </motion.div>
+          )}
+          {activeTab === "commits" && project.github_repo_id && (
+            <motion.div key="commits" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+              <CommitsTab
+                projectId={projectId}
+                snapshots={snapshots}
+                onNavigateToCommit={(sha) => { switchTab("commits"); }}
+              />
             </motion.div>
           )}
           {activeTab === "members" && (
@@ -346,7 +362,12 @@ export default function ProjectWorkspacePage() {
 /* ══════════════════════════════════════════════════════════
    FEED TAB — conversation timeline
 ══════════════════════════════════════════════════════════ */
-function FeedTab({ snapshots, projectName, projectId }: { snapshots: Snapshot[]; projectName: string; projectId: string }) {
+function FeedTab({ snapshots, projectName, projectId, onGoToCommit }: {
+  snapshots: Snapshot[]; projectName: string; projectId: string;
+  onGoToCommit?: (sha: string) => void;
+}) {
+  const [linkingSnap, setLinkingSnap] = useState<string | null>(null);
+
   if (snapshots.length === 0) {
     return (
       <div className="text-center py-20">
@@ -370,58 +391,536 @@ function FeedTab({ snapshots, projectName, projectId }: { snapshots: Snapshot[];
       <div className="relative">
         <div className="absolute left-[7px] top-2 bottom-2 w-px bg-gh-border" />
         <div className="space-y-3 pl-6">
-          {snapshots.map((snap, i) => (
-            <motion.div key={snap.id}
-              initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
-              className="relative">
-              <div className="absolute -left-6 top-4 flex items-center justify-center">
-                <div className={cn("h-3.5 w-3.5 rounded-full border-2 border-gh-bg", TOOL_DOT[snap.ai_tool] ?? "bg-gh-muted")} />
-              </div>
-              <div className="rounded-lg border border-gh-border bg-gh-canvas p-4 hover:border-engram/40 transition-colors group">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <span className={cn("text-[10px] font-mono uppercase tracking-wider", TOOL_TEXT[snap.ai_tool] ?? "text-gh-muted")}>
-                        {TOOL_LABEL[snap.ai_tool] ?? snap.ai_tool}
-                      </span>
-                      <span className="text-[10px] text-gh-muted">
-                        {new Date(snap.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
-                      </span>
-                      {snap.author_handle && (
-                        <span className="text-[10px] text-gh-muted flex items-center gap-1">
-                          · <Users className="h-2.5 w-2.5" />{snap.author_handle}
+          {snapshots.map((snap, i) => {
+            const links = snap.semantic_links ?? [];
+            const topLink = links[0] ?? null;
+            return (
+              <motion.div key={snap.id}
+                initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
+                className="relative">
+                <div className="absolute -left-6 top-4 flex items-center justify-center">
+                  <div className={cn("h-3.5 w-3.5 rounded-full border-2 border-gh-bg", TOOL_DOT[snap.ai_tool] ?? "bg-gh-muted")} />
+                </div>
+                <div className="rounded-lg border border-gh-border bg-gh-canvas p-4 hover:border-engram/40 transition-colors group">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                        <span className={cn("text-[10px] font-mono uppercase tracking-wider", TOOL_TEXT[snap.ai_tool] ?? "text-gh-muted")}>
+                          {TOOL_LABEL[snap.ai_tool] ?? snap.ai_tool}
                         </span>
+                        <span className="text-[10px] text-gh-muted">
+                          {new Date(snap.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                        </span>
+                        {snap.author_handle && (
+                          <span className="text-[10px] text-gh-muted flex items-center gap-1">
+                            · <Users className="h-2.5 w-2.5" />{snap.author_handle}
+                          </span>
+                        )}
+                        {snap.visibility === "team" && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gh-bg border border-gh-border text-gh-muted">team</span>
+                        )}
+                        {/* ── Commit badge ── */}
+                        {topLink && (
+                          <button
+                            onClick={() => onGoToCommit?.(topLink.commit_sha)}
+                            className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-engram/10 border border-engram/25 text-engram-light hover:bg-engram/20 transition-colors font-mono">
+                            <GitCommit className="h-2.5 w-2.5" />
+                            → {topLink.commit_sha.slice(0, 7)}
+                            {links.length > 1 && <span className="ml-0.5 text-engram-light/70">+{links.length - 1}</span>}
+                          </button>
+                        )}
+                      </div>
+                      <h3 className="font-medium text-gh-text text-sm mb-1 leading-snug">{snap.title}</h3>
+                      {snap.summary && <p className="text-xs text-gh-muted leading-relaxed line-clamp-2">{snap.summary}</p>}
+                      {snap.decision && (
+                        <div className="mt-2 flex items-start gap-1.5">
+                          <span className="text-[10px] font-mono text-engram-light shrink-0 mt-0.5">DECISION</span>
+                          <p className="text-xs text-gh-muted line-clamp-1">{snap.decision}</p>
+                        </div>
                       )}
-                      {snap.visibility === "team" && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gh-bg border border-gh-border text-gh-muted">team</span>
+                      {snap.tags.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {snap.tags.slice(0, 5).map((tag) => (
+                            <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-gh-bg border border-gh-border text-gh-muted">{tag}</span>
+                          ))}
+                        </div>
                       )}
                     </div>
-                    <h3 className="font-medium text-gh-text text-sm mb-1 leading-snug">{snap.title}</h3>
-                    {snap.summary && <p className="text-xs text-gh-muted leading-relaxed line-clamp-2">{snap.summary}</p>}
-                    {snap.decision && (
-                      <div className="mt-2 flex items-start gap-1.5">
-                        <span className="text-[10px] font-mono text-engram-light shrink-0 mt-0.5">DECISION</span>
-                        <p className="text-xs text-gh-muted line-clamp-1">{snap.decision}</p>
-                      </div>
-                    )}
-                    {snap.tags.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {snap.tags.slice(0, 5).map((tag) => (
-                          <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-gh-bg border border-gh-border text-gh-muted">{tag}</span>
-                        ))}
-                      </div>
-                    )}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {/* ··· menu */}
+                      <button
+                        onClick={() => setLinkingSnap(snap.id)}
+                        className="p-1.5 rounded hover:bg-gh-bg text-gh-muted hover:text-gh-text transition-colors opacity-0 group-hover:opacity-100"
+                        title="Link to commit">
+                        <GitCommit className="h-3.5 w-3.5" />
+                      </button>
+                      <Link href={`/context/${snap.id}`}
+                        className="p-1.5 rounded hover:bg-gh-bg text-gh-muted hover:text-gh-text transition-colors opacity-0 group-hover:opacity-100">
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </Link>
+                    </div>
                   </div>
-                  <Link href={`/context/${snap.id}`}
-                    className="shrink-0 p-1.5 rounded hover:bg-gh-bg text-gh-muted hover:text-gh-text transition-colors opacity-0 group-hover:opacity-100">
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  </Link>
                 </div>
-              </div>
-            </motion.div>
-          ))}
+              </motion.div>
+            );
+          })}
         </div>
       </div>
+
+      {/* Manual link modal: link a snapshot to a commit SHA */}
+      {linkingSnap && (
+        <CommitLinkModal
+          projectId={projectId}
+          snapshotId={linkingSnap}
+          snapshotTitle={snapshots.find((s) => s.id === linkingSnap)?.title ?? ""}
+          onClose={() => setLinkingSnap(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── CommitLinkModal ────────────────────────────────────── */
+function CommitLinkModal({ projectId, snapshotId, snapshotTitle, onClose }: {
+  projectId: string; snapshotId: string; snapshotTitle: string; onClose: () => void;
+}) {
+  const [sha, setSha] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function save() {
+    const trimmed = sha.trim();
+    if (!trimmed) return;
+    setSaving(true); setError(null);
+    try {
+      const r = await fetch(`/api/projects/${projectId}/commits/${trimmed}/links`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ snapshot_id: snapshotId }),
+      });
+      if (!r.ok) { const d = await r.json(); setError(d.error ?? "Failed"); return; }
+      setDone(true);
+      setTimeout(onClose, 1200);
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}
+        className="w-full max-w-sm bg-gh-canvas border border-gh-border rounded-xl p-5 shadow-xl">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-gh-text">Link to commit</h3>
+          <button onClick={onClose} className="p-1 rounded hover:bg-gh-bg text-gh-muted"><X className="h-4 w-4" /></button>
+        </div>
+        <p className="text-xs text-gh-muted mb-3 truncate">Linking: <span className="text-gh-text">{snapshotTitle}</span></p>
+        <input
+          value={sha}
+          onChange={(e) => setSha(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") onClose(); }}
+          placeholder="Commit SHA (full or short)"
+          className="w-full bg-gh-bg border border-gh-border rounded-lg px-3 py-2 text-sm font-mono text-gh-text placeholder:text-gh-muted focus:outline-none focus:border-engram mb-3"
+          autoFocus
+        />
+        {error && <p className="text-xs text-red-400 mb-2">{error}</p>}
+        {done && <p className="text-xs text-green-400 mb-2">Linked successfully!</p>}
+        <div className="flex gap-2">
+          <button onClick={onClose} className="flex-1 py-2 rounded-lg border border-gh-border text-gh-muted text-sm hover:text-gh-text transition-colors">Cancel</button>
+          <button
+            onClick={save}
+            disabled={saving || !sha.trim() || done}
+            className="flex-1 py-2 rounded-lg bg-engram text-white text-sm font-medium hover:bg-engram/90 disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
+            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+            {done ? "Done!" : "Link"}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════
+   COMMITS TAB — recent commits + semantic links
+══════════════════════════════════════════════════════════ */
+
+interface CommitRow {
+  sha: string;
+  sha_short: string;
+  message: string;
+  author: string;
+  timestamp: string;
+  linked_conversations: number;
+  linked_snapshot_ids: string[];
+  top_similarity: number;
+}
+
+interface IntentResult {
+  commit_sha: string;
+  intent_summary: string | null;
+  linked_snapshots: Array<{
+    link_id: string;
+    snapshot_id: string;
+    similarity: number;
+    is_manual: boolean;
+    linked_files: string[];
+    snapshot: { id: string; title: string; summary: string | null; decision: string | null; created_at: string; ai_tool: string } | null;
+  }>;
+}
+
+function CommitsTab({ projectId, snapshots }: {
+  projectId: string;
+  snapshots: Snapshot[];
+  onNavigateToCommit?: (sha: string) => void;
+}) {
+  const [commits, setCommits] = useState<CommitRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedSha, setExpandedSha] = useState<string | null>(null);
+  const [intentMap, setIntentMap] = useState<Record<string, IntentResult>>({});
+  const [intentLoading, setIntentLoading] = useState<string | null>(null);
+  const [linkModalCommit, setLinkModalCommit] = useState<CommitRow | null>(null);
+  const [repoFullName, setRepoFullName] = useState<string>("");
+  const [provider, setProvider] = useState<"github" | "gitlab">("github");
+
+  async function loadCommits() {
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/projects/${projectId}/commits`);
+      if (r.ok) {
+        const d = await r.json();
+        setCommits(d.commits ?? []);
+        setRepoFullName(d.repo_full_name ?? "");
+        setProvider(d.provider ?? "github");
+      }
+    } finally { setLoading(false); }
+  }
+
+  useEffect(() => { loadCommits(); }, [projectId]);
+
+  async function loadIntent(sha: string) {
+    if (intentMap[sha]) return;
+    setIntentLoading(sha);
+    try {
+      const r = await fetch(`/api/projects/${projectId}/commits/${sha}/intent`);
+      if (r.ok) {
+        const d = await r.json();
+        setIntentMap((prev) => ({ ...prev, [sha]: d }));
+      }
+    } finally { setIntentLoading(null); }
+  }
+
+  function toggleExpand(sha: string) {
+    if (expandedSha === sha) {
+      setExpandedSha(null);
+    } else {
+      setExpandedSha(sha);
+      loadIntent(sha);
+    }
+  }
+
+  async function unlinkSnapshot(sha: string, snapshotId: string) {
+    await fetch(`/api/projects/${projectId}/commits/${sha}/links?snapshot_id=${snapshotId}`, { method: "DELETE" });
+    // Refresh intent data for this commit
+    setIntentMap((prev) => {
+      const updated = { ...prev };
+      delete updated[sha];
+      return updated;
+    });
+    loadIntent(sha);
+  }
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-3">
+        <Loader2 className="h-6 w-6 text-engram-light animate-spin" />
+        <p className="text-sm text-gh-muted">Loading commit history…</p>
+      </div>
+    );
+  }
+
+  if (commits.length === 0) {
+    return (
+      <div className="text-center py-20">
+        <GitCommit className="h-12 w-12 text-gh-muted/30 mx-auto mb-4" />
+        <h3 className="text-lg font-medium text-gh-text mb-2">No commits yet</h3>
+        <p className="text-sm text-gh-muted max-w-sm mx-auto">
+          Push a commit to the connected repository. Semantic links are created automatically after each push.
+        </p>
+      </div>
+    );
+  }
+
+  const baseUrl = provider === "gitlab"
+    ? `https://gitlab.com/${repoFullName}/-/commit`
+    : `https://github.com/${repoFullName}/commit`;
+
+  return (
+    <div className="max-w-4xl">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-xs font-mono uppercase tracking-wider text-gh-muted flex items-center gap-2">
+          <GitCommit className="h-3.5 w-3.5" />
+          Commit History — {commits.length} recent
+        </h2>
+        <button onClick={loadCommits} className="p-1.5 rounded hover:bg-gh-canvas text-gh-muted hover:text-gh-text transition-colors">
+          <RefreshCw className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <div className="space-y-2">
+        {commits.map((commit) => {
+          const isExpanded = expandedSha === commit.sha;
+          const intent = intentMap[commit.sha];
+          const isLoadingIntent = intentLoading === commit.sha;
+
+          return (
+            <div key={commit.sha} className="rounded-lg border border-gh-border bg-gh-canvas overflow-hidden">
+              {/* ── Commit row ── */}
+              <div
+                className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gh-bg transition-colors"
+                onClick={() => toggleExpand(commit.sha)}>
+                <div className="h-2 w-2 rounded-full bg-gh-muted shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start gap-2 flex-wrap">
+                    <code className="text-[11px] font-mono text-engram-light shrink-0">{commit.sha_short}</code>
+                    <span className="text-sm text-gh-text leading-snug truncate flex-1 min-w-0">{commit.message}</span>
+                  </div>
+                  <div className="flex items-center gap-3 mt-1 text-[10px] text-gh-muted">
+                    <span>{commit.author}</span>
+                    {commit.timestamp && (
+                      <span>{new Date(commit.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {commit.linked_conversations > 0 && (
+                    <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-engram/10 border border-engram/25 text-engram-light">
+                      <MessageSquare className="h-2.5 w-2.5" />
+                      {commit.linked_conversations} conversation{commit.linked_conversations !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                  <a
+                    href={`${baseUrl}/${commit.sha}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="p-1 rounded hover:bg-gh-canvas text-gh-muted hover:text-gh-text transition-colors">
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                  <ChevronDown className={cn("h-4 w-4 text-gh-muted transition-transform", isExpanded && "rotate-180")} />
+                </div>
+              </div>
+
+              {/* ── Expanded detail ── */}
+              <AnimatePresence>
+                {isExpanded && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden border-t border-gh-border">
+                    <div className="px-4 py-4 space-y-4">
+                      {/* Intent summary */}
+                      {isLoadingIntent ? (
+                        <div className="flex items-center gap-2 text-xs text-gh-muted">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-engram-light" />
+                          Generating intent summary…
+                        </div>
+                      ) : intent?.intent_summary ? (
+                        <div className="rounded-lg border border-engram/20 bg-engram/5 px-3 py-2.5">
+                          <div className="flex items-center gap-1.5 mb-1.5">
+                            <Sparkles className="h-3.5 w-3.5 text-engram-light shrink-0" />
+                            <span className="text-[10px] font-mono uppercase tracking-wider text-engram-light">Why this was built</span>
+                          </div>
+                          <p className="text-xs text-gh-text leading-relaxed">{intent.intent_summary}</p>
+                        </div>
+                      ) : intent && !intent.intent_summary ? (
+                        <p className="text-xs text-gh-muted">No linked conversations yet — push a commit or link manually.</p>
+                      ) : null}
+
+                      {/* Linked conversations */}
+                      {intent && intent.linked_snapshots.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-mono uppercase tracking-wider text-gh-muted mb-2">
+                            Linked conversations ({intent.linked_snapshots.length})
+                          </p>
+                          <div className="space-y-1.5">
+                            {intent.linked_snapshots.map((link) => (
+                              <div key={link.link_id}
+                                className="flex items-start gap-2 p-2 rounded-lg border border-gh-border bg-gh-bg group">
+                                <MessageSquare className="h-3.5 w-3.5 text-gh-muted shrink-0 mt-0.5" />
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <Link href={`/context/${link.snapshot_id}`}
+                                      className="text-xs text-gh-text hover:text-engram-light transition-colors truncate">
+                                      {link.snapshot?.title ?? "Untitled conversation"}
+                                    </Link>
+                                    {link.is_manual && (
+                                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-gh-canvas border border-gh-border text-gh-muted shrink-0">manual</span>
+                                    )}
+                                    {!link.is_manual && (
+                                      <span className="text-[9px] text-gh-muted shrink-0">{Math.round(link.similarity * 100)}% match</span>
+                                    )}
+                                  </div>
+                                  {link.snapshot?.decision && (
+                                    <p className="text-[10px] text-gh-muted mt-0.5 line-clamp-1">→ {link.snapshot.decision}</p>
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() => unlinkSnapshot(commit.sha, link.snapshot_id)}
+                                  className="p-1 rounded hover:bg-red-500/10 text-gh-muted hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 shrink-0"
+                                  title="Unlink">
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Add conversation button */}
+                      <button
+                        onClick={() => setLinkModalCommit(commit)}
+                        className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-gh-border bg-gh-bg text-gh-muted hover:text-gh-text hover:border-engram/40 transition-colors">
+                        <MessageSquare className="h-3.5 w-3.5" />
+                        Add conversation
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Manual link from commit detail: search + pick a snapshot */}
+      {linkModalCommit && (
+        <CommitSnapshotSearchModal
+          projectId={projectId}
+          commit={linkModalCommit}
+          snapshots={snapshots}
+          onClose={() => setLinkModalCommit(null)}
+          onLinked={() => {
+            // Refresh intent for this commit
+            setIntentMap((prev) => {
+              const updated = { ...prev };
+              delete updated[linkModalCommit.sha];
+              return updated;
+            });
+            loadIntent(linkModalCommit.sha);
+            setLinkModalCommit(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── CommitSnapshotSearchModal ──────────────────────────── */
+function CommitSnapshotSearchModal({ projectId, commit, snapshots, onClose, onLinked }: {
+  projectId: string;
+  commit: CommitRow;
+  snapshots: Snapshot[];
+  onClose: () => void;
+  onLinked: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [linking, setLinking] = useState<string | null>(null);
+  const [linked, setLinked] = useState<Set<string>>(new Set(commit.linked_snapshot_ids));
+
+  const filtered = snapshots.filter((s) => {
+    if (!query.trim()) return true;
+    const q = query.toLowerCase();
+    return (s.title ?? "").toLowerCase().includes(q) ||
+      (s.summary ?? "").toLowerCase().includes(q) ||
+      (s.decision ?? "").toLowerCase().includes(q);
+  });
+
+  async function link(snapshotId: string) {
+    setLinking(snapshotId);
+    try {
+      const r = await fetch(`/api/projects/${projectId}/commits/${commit.sha}/links`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          snapshot_id: snapshotId,
+          commit_message: commit.message,
+          committed_at: commit.timestamp || null,
+        }),
+      });
+      if (r.ok) {
+        setLinked((prev) => new Set([...prev, snapshotId]));
+        onLinked();
+      }
+    } finally { setLinking(null); }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}
+        className="w-full max-w-lg bg-gh-canvas border border-gh-border rounded-xl shadow-xl flex flex-col max-h-[80vh]">
+        <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-gh-border">
+          <div>
+            <h3 className="text-sm font-semibold text-gh-text">Link conversation to commit</h3>
+            <p className="text-xs text-gh-muted mt-0.5 font-mono">{commit.sha_short} — {commit.message.slice(0, 60)}</p>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-gh-bg text-gh-muted"><X className="h-4 w-4" /></button>
+        </div>
+
+        <div className="px-5 py-3 border-b border-gh-border">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search conversations…"
+            autoFocus
+            className="w-full bg-gh-bg border border-gh-border rounded-lg px-3 py-2 text-sm text-gh-text placeholder:text-gh-muted focus:outline-none focus:border-engram"
+          />
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-3 space-y-1.5">
+          {filtered.length === 0 && (
+            <p className="text-xs text-gh-muted text-center py-8">No conversations match.</p>
+          )}
+          {filtered.map((snap) => {
+            const isLinked = linked.has(snap.id);
+            const isLinking = linking === snap.id;
+            return (
+              <div key={snap.id}
+                className="flex items-start gap-3 p-3 rounded-lg border border-gh-border bg-gh-bg hover:border-engram/40 transition-colors">
+                <div className={cn("h-2 w-2 rounded-full mt-1.5 shrink-0", TOOL_DOT[snap.ai_tool] ?? "bg-gh-muted")} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-gh-text leading-snug truncate">{snap.title}</p>
+                  {snap.decision && <p className="text-[10px] text-gh-muted mt-0.5 line-clamp-1">→ {snap.decision}</p>}
+                  <p className="text-[10px] text-gh-muted mt-0.5">
+                    {new Date(snap.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                  </p>
+                </div>
+                <button
+                  onClick={() => !isLinked && link(snap.id)}
+                  disabled={isLinked || isLinking}
+                  className={cn(
+                    "shrink-0 flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border transition-colors",
+                    isLinked
+                      ? "border-green-500/30 bg-green-500/10 text-green-400 cursor-default"
+                      : "border-gh-border text-gh-muted hover:border-engram/40 hover:text-engram-light"
+                  )}>
+                  {isLinking ? <Loader2 className="h-3 w-3 animate-spin" /> : isLinked ? <Check className="h-3 w-3" /> : <MessageSquare className="h-3 w-3" />}
+                  {isLinked ? "Linked" : "Link"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="px-5 py-3 border-t border-gh-border">
+          <button onClick={onClose} className="w-full py-2 rounded-lg border border-gh-border text-gh-muted text-sm hover:text-gh-text transition-colors">
+            Done
+          </button>
+        </div>
+      </motion.div>
     </div>
   );
 }

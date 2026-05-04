@@ -17,6 +17,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { indexChangedFiles } from "@/lib/repo-indexer";
+import { linkCommitToConversations } from "@/lib/commit-linker";
 
 function verifyGitLabToken(token: string | null): boolean {
   const expectedToken = process.env.GITLAB_WEBHOOK_TOKEN;
@@ -121,17 +122,31 @@ export async function POST(request: NextRequest) {
       .in("file_path", removedArr);
   }
 
-  // Background indexing for changed files (non-blocking — GitLab expects < 10s)
-  indexChangedFiles({
-    repoId: repo.id,
-    teamId: repo.team_id,
-    repoFullName,
-    provider: "gitlab",
-    commitSha,
-    commitMessage,
-    commitTimestamp,
-    changedFiles: Array.from(changedFiles),
-  }).catch((err) => console.error("[webhook/gitlab] indexing error:", err));
+  // Run AST indexing then semantic linking in background (non-blocking)
+  (async () => {
+    try {
+      await indexChangedFiles({
+        repoId: repo.id,
+        teamId: repo.team_id,
+        repoFullName,
+        provider: "gitlab",
+        commitSha,
+        commitMessage,
+        commitTimestamp,
+        changedFiles: Array.from(changedFiles),
+      });
+    } catch (err) {
+      console.error("[webhook/gitlab] indexing error:", err);
+    }
+    linkCommitToConversations({
+      repoId: repo.id,
+      teamId: repo.team_id,
+      commitSha,
+      commitMessage,
+      commitTimestamp,
+      changedFiles: Array.from(changedFiles),
+    }).catch((err) => console.error("[webhook/gitlab] commit-linker error:", err));
+  })();
 
   return NextResponse.json({
     ok: true,

@@ -52,6 +52,24 @@ export async function GET(
       .order("joined_at", { ascending: true }),
   ]);
 
+  // Load semantic links for all snapshots in this project (for feed badges)
+  const snapIds = (snapsRes.data ?? []).map((s: { id: string }) => s.id);
+  let snapshotLinkMap: Record<string, { commit_sha: string; committed_at: string | null }[]> = {};
+  if (snapIds.length > 0 && project.github_repo_id) {
+    const { data: links } = await admin
+      .from("semantic_links")
+      .select("snapshot_id, commit_sha, committed_at")
+      .eq("repo_id", project.github_repo_id)
+      .in("snapshot_id", snapIds);
+    for (const link of (links ?? [])) {
+      if (!snapshotLinkMap[link.snapshot_id]) snapshotLinkMap[link.snapshot_id] = [];
+      snapshotLinkMap[link.snapshot_id].push({
+        commit_sha: link.commit_sha,
+        committed_at: link.committed_at,
+      });
+    }
+  }
+
   // Enrich members with profile info
   const rawMembers = (membersRes.data ?? []) as { id: string; user_id: string; role: string; joined_at: string }[];
   let members: unknown[] = rawMembers;
@@ -70,6 +88,12 @@ export async function GET(
 
   const myMembership = rawMembers.find((m) => m.user_id === user.id);
 
+  // Attach semantic link data to each snapshot
+  const snapshots = (snapsRes.data ?? []).map((s: { id: string }) => ({
+    ...s,
+    semantic_links: snapshotLinkMap[s.id] ?? [],
+  }));
+
   return NextResponse.json({
     project: {
       ...project,
@@ -78,7 +102,7 @@ export async function GET(
       is_owner: myMembership?.role === "owner",
       is_member: !!myMembership,
     },
-    snapshots: snapsRes.data ?? [],
+    snapshots,
     members,
   });
 }
