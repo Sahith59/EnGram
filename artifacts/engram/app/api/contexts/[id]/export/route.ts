@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getUserFromBearer } from "@/lib/supabase/bearer";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 
 /**
@@ -14,6 +16,8 @@ import { isSupabaseConfigured } from "@/lib/supabase/config";
  *     but `mode=raw` and the verbatim tail in `mode=handoff` are reserved
  *     to the original author. Non-author team members get a redacted
  *     handoff (no raw turns) and a 403 on raw.
+ *
+ * Supports both cookie-based (browser) and Bearer token (CLI) auth.
  */
 export async function GET(
   request: NextRequest,
@@ -23,17 +27,20 @@ export async function GET(
     return NextResponse.json({ error: "Supabase not configured" }, { status: 503 });
   }
   const supabase = await createClient();
+  const { data: { user: cookieUser } } = await supabase.auth.getUser();
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
+  let user = cookieUser;
+  if (!user) {
+    user = await getUserFromBearer(request.headers.get("authorization"));
+  }
 
-  if (authError || !user) {
+  if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: profile } = await supabase
+  const admin = createAdminClient();
+
+  const { data: profile } = await admin
     .from("profiles")
     .select("team_id")
     .eq("id", user.id)
@@ -43,11 +50,8 @@ export async function GET(
     return NextResponse.json({ error: "User has no team" }, { status: 400 });
   }
 
-  // Fetch including ownership + visibility so we can enforce scoped access.
-  // RLS will already block disallowed rows (personal rows you don't own;
-  // team rows from a different team) but we re-check application-side so we
-  // can branch on visibility for redaction.
-  const { data: row, error } = await supabase
+  // Use admin client so Bearer token (CLI) path works without cookie-based RLS.
+  const { data: row, error } = await admin
     .from("context_snapshots")
     .select(
       "title, rationale, summary, decision, tags, ai_tool, created_at, raw_conversation, created_by, team_id, visibility"

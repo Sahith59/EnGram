@@ -78,11 +78,16 @@ export class EngramAPI {
     if (opts.search) p.set("search", opts.search);
     if (opts.page) p.set("page", String(opts.page));
     const qs = p.toString() ? `?${p}` : "";
-    return this.req("GET", `/api/contexts${qs}`);
+    const res = await this.req<{
+      data: Snapshot[];
+      pagination: { total: number };
+    }>("GET", `/api/contexts${qs}`);
+    return { data: res.data ?? [], total: res.pagination?.total ?? 0 };
   }
 
   async getContext(id: string): Promise<Snapshot> {
-    return this.req("GET", `/api/contexts/${id}`);
+    const res = await this.req<{ data: Snapshot }>("GET", `/api/contexts/${id}`);
+    return res.data;
   }
 
   async exportContext(

@@ -51,6 +51,10 @@ router.post("/auth/cli", (req, res) =>
 );
 router.get("/me", (req, res) => proxyToNextJs(req, res, "/api/me"));
 router.get("/contexts", (req, res) => proxyToNextJs(req, res, "/api/contexts"));
+// More-specific sub-path must come BEFORE the generic /:id route
+router.get("/contexts/:id/export", (req, res) =>
+  proxyToNextJs(req, res, `/api/contexts/${req.params.id}/export`),
+);
 router.get("/contexts/:id", (req, res) =>
   proxyToNextJs(req, res, `/api/contexts/${req.params.id}`),
 );

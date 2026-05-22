@@ -505,16 +505,18 @@
     }
 
     if (TOOL === "claude") {
-      // Strategy 1 (2025+): contains-based matching covers all known testid variants
-      //   "human-turn", "user-human-turn" → user
-      //   "ai-turn", "assistant-turn"      → assistant
+      // Strategy 1 (2025+): broad contains-based matching covers all known testid
+      // variants including Claude's "user-turn"/"assistant-turn" (2024+) and the
+      // older "human-turn"/"ai-turn" naming.
+      //   "human-turn", "user-human-turn", "user-turn" → user
+      //   "ai-turn", "assistant-turn"                  → assistant
       const modernEls = document.querySelectorAll(
-        "[data-testid*='human-turn'], [data-testid*='ai-turn'], [data-testid*='assistant-turn']"
+        "[data-testid*='human-turn'], [data-testid*='user-turn'], [data-testid*='ai-turn'], [data-testid*='assistant-turn']"
       );
       if (modernEls.length > 0) {
         modernEls.forEach((el) => {
           const tid = el.getAttribute("data-testid") ?? "";
-          result.push({ el, role: tid.includes("human") ? "user" : "assistant" });
+          result.push({ el, role: tid.includes("human") || tid.includes("user") ? "user" : "assistant" });
         });
       }
       // Strategy 2: older data-testid^="message" pattern
@@ -524,7 +526,7 @@
           result.push({ el, role: tid.includes("human") || tid.includes("user") ? "user" : "assistant" });
         });
       }
-      // Strategy 3: class-based selectors
+      // Strategy 3: class-based selectors (older Claude versions)
       if (result.length === 0) {
         document.querySelectorAll(".font-claude-message, .font-user-message").forEach((el) => {
           result.push({
@@ -782,13 +784,20 @@
       assistantEl.querySelector('[class*="markdown"]') ||
       assistantEl.querySelector("message-content") ||
       assistantEl.querySelector(".query-text") ||
+      // Claude 2024+: response body containers
+      assistantEl.querySelector('[class*="whitespace-pre-wrap"]') ||
+      assistantEl.querySelector('[class*="text-message"]') ||
+      assistantEl.querySelector('[class*="response-content"]') ||
       null;
 
     if (proseAnchor && proseAnchor.parentElement) {
       // Insert wrap after the prose block, as a sibling inside its parent
       proseAnchor.insertAdjacentElement("afterend", wrap);
+    } else if (assistantEl.parentElement) {
+      // Fallback: insert AFTER the entire assistantEl so it is never clipped
+      // by overflow:hidden on the message container itself.
+      assistantEl.insertAdjacentElement("afterend", wrap);
     } else {
-      // Fallback: append at the end of the assistantEl itself
       assistantEl.appendChild(wrap);
     }
 

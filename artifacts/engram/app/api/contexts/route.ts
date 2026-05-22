@@ -79,7 +79,7 @@ export async function GET(request: NextRequest) {
       .eq("visibility", "personal");
   }
 
-  if (tool) query = query.eq("ai_tool", tool);
+  if (tool) query = query.ilike("ai_tool", tool);
 
   if (search) {
     // Per-token OR match — much better recall than '%full phrase%'.
