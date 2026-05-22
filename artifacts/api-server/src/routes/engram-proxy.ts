@@ -46,18 +46,49 @@ async function proxyToNextJs(
   }
 }
 
+// ── CLI auth ──────────────────────────────────────────────
 router.post("/auth/cli", (req, res) =>
   proxyToNextJs(req, res, "/api/auth/cli"),
 );
+
+// ── Health / status (extension popup + CLI) ───────────────
+router.get("/health", (req, res) => proxyToNextJs(req, res, "/api/health"));
+
+// ── User / identity ───────────────────────────────────────
 router.get("/me", (req, res) => proxyToNextJs(req, res, "/api/me"));
+
+// ── Contexts (CLI) ────────────────────────────────────────
 router.get("/contexts", (req, res) => proxyToNextJs(req, res, "/api/contexts"));
-// More-specific sub-path must come BEFORE the generic /:id route
+// Sub-paths must come BEFORE the generic /:id route
 router.get("/contexts/:id/export", (req, res) =>
   proxyToNextJs(req, res, `/api/contexts/${req.params.id}/export`),
 );
 router.get("/contexts/:id", (req, res) =>
   proxyToNextJs(req, res, `/api/contexts/${req.params.id}`),
 );
+router.patch("/contexts/:id", (req, res) =>
+  proxyToNextJs(req, res, `/api/contexts/${req.params.id}`),
+);
+router.delete("/contexts/:id", (req, res) =>
+  proxyToNextJs(req, res, `/api/contexts/${req.params.id}`),
+);
+
+// ── Ask / AI (CLI + extension) ────────────────────────────
 router.post("/ask", (req, res) => proxyToNextJs(req, res, "/api/ask"));
+
+// ── Extension endpoints ───────────────────────────────────
+router.post("/capture/reassign", (req, res) =>
+  proxyToNextJs(req, res, "/api/capture/reassign"),
+);
+router.post("/capture", (req, res) => proxyToNextJs(req, res, "/api/capture"));
+router.post("/checkpoint", (req, res) =>
+  proxyToNextJs(req, res, "/api/checkpoint"),
+);
+router.get("/projects", (req, res) => proxyToNextJs(req, res, "/api/projects"));
+router.get("/projects/:id/brief", (req, res) =>
+  proxyToNextJs(req, res, `/api/projects/${req.params.id}/brief`),
+);
+router.get("/teams", (req, res) => proxyToNextJs(req, res, "/api/teams"));
+router.get("/resume", (req, res) => proxyToNextJs(req, res, "/api/resume"));
 
 export default router;
