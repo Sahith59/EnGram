@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getUserFromBearer } from "@/lib/supabase/bearer";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { corsOptions, withCors } from "@/lib/cors";
 import { ensureUserTeam } from "@/lib/team";
@@ -12,6 +14,7 @@ export function OPTIONS(request: NextRequest) {
  * GET /api/me
  * Returns the currently signed-in user's identity for the Chrome extension.
  * Auto-creates a personal workspace if the user doesn't have one yet.
+ * Supports both cookie-based (browser) and Bearer token (CLI) auth.
  */
 export async function GET(request: NextRequest) {
   if (!isSupabaseConfigured()) {
@@ -22,17 +25,22 @@ export async function GET(request: NextRequest) {
   }
 
   const supabase = await createClient();
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
+  const { data: { user: cookieUser }, error } = await supabase.auth.getUser();
 
-  if (error || !user) {
+  // Bearer token fallback for CLI clients
+  let user = cookieUser;
+  if (!user) {
+    user = await getUserFromBearer(request.headers.get("authorization"));
+  }
+
+  if (!user) {
     return withCors(
       NextResponse.json({ connected: false, error: "Not signed in" }, { status: 401 }),
       request
     );
   }
+
+  const db = createAdminClient();
 
   // Single source of truth for team bootstrap
   const teamId = await ensureUserTeam({
@@ -43,7 +51,7 @@ export async function GET(request: NextRequest) {
       | null,
   });
 
-  const { data: profile } = await supabase
+  const { data: profile } = await db
     .from("profiles")
     .select("full_name, avatar_url")
     .eq("id", user.id)

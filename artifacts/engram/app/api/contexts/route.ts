@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getUserFromBearer } from "@/lib/supabase/bearer";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 
 /**
@@ -11,6 +13,7 @@ import { isSupabaseConfigured } from "@/lib/supabase/config";
  *                        Other team members' raw_conversation is hidden by
  *                        the detail endpoint; this list view never returns
  *                        raw_conversation regardless of scope.
+ * Supports both cookie-based (browser) and Bearer token (CLI) auth.
  */
 export async function GET(request: NextRequest) {
   if (!isSupabaseConfigured()) {
@@ -21,17 +24,20 @@ export async function GET(request: NextRequest) {
     });
   }
   const supabase = await createClient();
+  const { data: { user: cookieUser } } = await supabase.auth.getUser();
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
+  // Bearer token fallback for CLI clients
+  let user = cookieUser;
+  if (!user) {
+    user = await getUserFromBearer(request.headers.get("authorization"));
+  }
 
-  if (authError || !user) {
+  if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: profile } = await supabase
+  const db = createAdminClient();
+  const { data: profile } = await db
     .from("profiles")
     .select("team_id")
     .eq("id", user.id)
@@ -53,7 +59,7 @@ export async function GET(request: NextRequest) {
   // Build the scoped query. We intentionally DON'T select raw_conversation
   // here — list cards never need it, and excluding it keeps team-scope rows
   // safe for non-creators by construction.
-  let query = supabase
+  let query = db
     .from("context_snapshots")
     .select(
       "id, title, summary, ai_tool, tags, project, decision, created_by, created_at, visibility, author_handle",

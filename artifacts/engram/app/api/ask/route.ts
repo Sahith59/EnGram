@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getUserFromBearer } from "@/lib/supabase/bearer";
 import { anthropic } from "@/lib/anthropic";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { embedText } from "@/lib/embeddings";
@@ -40,17 +41,20 @@ export async function POST(request: NextRequest) {
     );
   }
   const supabase = await createClient();
+  const { data: { user: cookieUser } } = await supabase.auth.getUser();
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
+  // Bearer token fallback for CLI clients
+  let user = cookieUser;
+  if (!user) {
+    user = await getUserFromBearer(request.headers.get("authorization"));
+  }
 
-  if (authError || !user) {
+  if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { data: profile } = await supabase
+  const adminDb = createAdminClient();
+  const { data: profile } = await adminDb
     .from("profiles")
     .select("team_id")
     .eq("id", user.id)
@@ -288,7 +292,7 @@ export async function POST(request: NextRequest) {
   const missingSemanticIds = [...semanticIds].filter((id) => !knownIds.has(id));
   let semanticRows: SourceRow[] = [];
   if (missingSemanticIds.length > 0) {
-    const { data, error } = await supabase
+    const { data, error } = await adminDb
       .from("context_snapshots")
       .select(
         "id, title, summary, decision, rationale, ai_tool, tags, created_at, visibility, author_handle, created_by"
@@ -569,7 +573,7 @@ Strict rules:
     related = relatedRaw;
   }
 
-  const { data: savedQuery } = await supabase
+  const { data: savedQuery } = await adminDb
     .from("kt_queries")
     .insert({
       team_id: profile.team_id,

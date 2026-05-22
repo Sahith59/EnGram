@@ -1,0 +1,29 @@
+{
+  "name": "@engram/cli",
+  "version": "0.1.0",
+  "description": "ENGRAM CLI — pull AI context into any terminal",
+  "main": "dist/index.js",
+  "bin": {
+    "engram": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/index.ts",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["engram", "cli", "ai", "context", "memory"],
+  "license": "MIT"
+}
