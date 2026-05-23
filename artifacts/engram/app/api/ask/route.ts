@@ -64,14 +64,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "User has no team" }, { status: 400 });
   }
 
-  let body: { question: string; scope?: "personal" | "team" | "all" | "project"; project_id?: string };
+  let body: {
+    question: string;
+    scope?: "personal" | "team" | "all" | "project";
+    project_id?: string;
+    conversationHistory?: Array<{ question: string; answer: string }>;
+  };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { question } = body;
+  const { question, conversationHistory } = body;
   const rawScope = body.scope;
   const projectId = body.project_id ?? null;
   const scope: "personal" | "team" | "all" | "project" =
@@ -476,15 +481,26 @@ Rationale: ${s.rationale ? s.rationale.slice(0, 400) : "N/A"}`;
     const hasSnapshots = sources.length > 0;
     const hasGithub = githubHits.length > 0;
 
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-5",
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: `You are a precise knowledge assistant for a developer team. Answer the user's question using the captured contexts and/or GitHub code below that are actually relevant.
+    // Build multi-turn history messages so Claude has full conversation context.
+    // We include the last 4 turns to stay within token budget.
+    type ClaudeMsg = { role: "user" | "assistant"; content: string };
+    const historyMessages: ClaudeMsg[] = [];
+    if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
+      for (const turn of conversationHistory.slice(-4)) {
+        if (!turn.question?.trim()) continue;
+        historyMessages.push({ role: "user", content: turn.question });
+        // Truncate long answers to save tokens but preserve meaning
+        const truncated =
+          turn.answer.length > 600
+            ? turn.answer.slice(0, 600) + "\n[…answer continues]"
+            : turn.answer;
+        historyMessages.push({ role: "assistant", content: truncated });
+      }
+    }
 
-Question: ${question}
+    const currentUserContent = `Answer the user's latest question using the captured contexts and/or GitHub code below that are actually relevant. You have the full conversation history above for context — use it to understand follow-up questions and references like "do that" or "the code you mentioned".
+
+Latest question: ${question}
 ${hasSnapshots ? `\n## Captured AI Conversations\n\n${contextBlock}` : ""}${githubBlock}
 
 Strict rules:
@@ -493,10 +509,19 @@ Strict rules:
 - For GitHub code or commits, cite with [GH1], [GH2], etc.
 - DO NOT cite a context just to pad the answer. Better to cite one source well than four loosely.
 - For commit/history questions: the GitHub commit data above IS the authoritative source — answer directly from it with sha, author, date, and message. Do not say you lack real-time access.
-- If NONE of the contexts answer the question, respond exactly with: "I don't have a captured conversation that answers this. Try rephrasing, or capture a chat on this topic."
+- If the question is a follow-up and the answer is in the conversation history above, answer from that — do NOT say you have no captured conversation.
+- If NONE of the contexts and history answer the question, respond exactly with: "I don't have a captured conversation that answers this. Try rephrasing, or capture a chat on this topic."
 - Be concise (2-4 paragraphs max). No filler.
-- End with a single line: CONFIDENCE: [0.0-1.0]`,
-        },
+- End with a single line: CONFIDENCE: [0.0-1.0]`;
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-5",
+      max_tokens: 1024,
+      system:
+        "You are ENGRAM, a precise knowledge assistant for a developer team. You have access to the conversation history and captured AI context. Maintain continuity across follow-up questions.",
+      messages: [
+        ...historyMessages,
+        { role: "user", content: currentUserContent },
       ],
     });
 
