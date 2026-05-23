@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Sparkles, ArrowUpRight, Info } from "lucide-react";
 import { ToolBadge } from "@/components/context/ToolBadge";
 import { formatRelativeTime } from "@/lib/utils";
+import { MarkdownContent } from "@/components/ui/MarkdownContent";
 import type { AITool } from "@/types";
 
 export interface AnswerSource {
@@ -64,9 +65,7 @@ export function AnswerCard({
           </p>
 
           <p className="text-xs font-mono text-gh-muted mb-3">ANSWER</p>
-          <div className="text-[15px] text-gh-text leading-relaxed whitespace-pre-wrap">
-            {renderWithCitations(answer, sources)}
-          </div>
+          <MarkdownContent content={answer} sources={sources} />
         </div>
       </div>
 
@@ -184,25 +183,3 @@ function ConfidenceBar({ confidence }: { confidence: number }) {
   );
 }
 
-function renderWithCitations(text: string, sources: AnswerSource[]) {
-  const parts = text.split(/(\[\d+\])/g);
-  return parts.map((part, i) => {
-    const m = part.match(/^\[(\d+)\]$/);
-    if (m) {
-      const ref = parseInt(m[1], 10);
-      const src = sources.find((s) => s.ref === ref);
-      if (src) {
-        return (
-          <Link
-            key={i}
-            href={`/context/${src.id}`}
-            className="inline-flex items-center px-1.5 py-px rounded text-[11px] font-mono bg-engram/15 text-engram-light hover:bg-engram/25 transition-colors mx-0.5 align-baseline"
-          >
-            {ref}
-          </Link>
-        );
-      }
-    }
-    return <span key={i}>{part}</span>;
-  });
-}

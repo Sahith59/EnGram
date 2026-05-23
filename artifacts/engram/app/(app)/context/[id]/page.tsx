@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { ToolBadge } from "@/components/context/ToolBadge";
 import { formatRelativeTime, cn } from "@/lib/utils";
+import { MarkdownContent } from "@/components/ui/MarkdownContent";
 import type { ContextSnapshot } from "@/types";
 
 const tabs = [
@@ -344,14 +345,14 @@ function SummaryView({ data }: { data: ContextSnapshot }) {
   return (
     <div className="space-y-6">
       <Section title="Summary">
-        <p className="text-[15px] text-gh-text leading-relaxed">
-          {data.summary ?? <span className="text-gh-muted italic">No summary captured.</span>}
-        </p>
+        {data.summary
+          ? <MarkdownContent content={data.summary} />
+          : <p className="text-gh-muted italic text-[15px]">No summary captured.</p>}
       </Section>
       <Section title="Key decisions">
-        <p className="text-[15px] text-gh-text leading-relaxed whitespace-pre-wrap">
-          {data.decision ?? <span className="text-gh-muted italic">No decisions extracted.</span>}
-        </p>
+        {data.decision
+          ? <MarkdownContent content={data.decision} />
+          : <p className="text-gh-muted italic text-[15px]">No decisions extracted.</p>}
       </Section>
     </div>
   );
@@ -361,11 +362,7 @@ function ContextMdView({ md }: { md: string | null }) {
   if (!md) {
     return <p className="text-gh-muted italic">No context.md available.</p>;
   }
-  return (
-    <pre className="rounded-lg border border-gh-border bg-gh-canvas p-5 text-sm text-gh-text font-mono leading-relaxed whitespace-pre-wrap break-words overflow-x-auto">
-      {md}
-    </pre>
-  );
+  return <MarkdownContent content={md} />;
 }
 
 function RawView({ raw }: { raw: ContextSnapshot["raw_conversation"] }) {
@@ -384,8 +381,8 @@ function RawView({ raw }: { raw: ContextSnapshot["raw_conversation"] }) {
           >
             {m.role}
           </div>
-          <div className="p-4 text-sm text-gh-text whitespace-pre-wrap leading-relaxed">
-            {m.content}
+          <div className="p-4">
+            <MarkdownContent content={m.content} />
           </div>
         </div>
       ))}
