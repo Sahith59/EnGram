@@ -406,23 +406,8 @@ export async function POST(request: NextRequest) {
   const scored = scoredAll.slice(0, 4);
   const sources = scored.map((s) => s.row);
 
-  // Early return only if BOTH snapshot sources AND github hits are empty
-  if (sources.length === 0 && githubHits.length === 0) {
-    const hint =
-      scope === "team"
-        ? "No matching team snapshots found. Try Personal scope, or capture some chats in Team mode first."
-        : scope === "personal"
-        ? "No matching personal snapshots found. Try a broader question, or switch to Team scope."
-        : "No matching snapshots found. Capture more AI conversations and try again.";
-    return NextResponse.json({
-      answer: hint,
-      sources: [],
-      related: [],
-      github_sources: [],
-      queryId: null,
-      scope,
-    });
-  }
+  // NOTE: We no longer early-return when no captured context is found.
+  // ENGRAM will fall back to Claude's general knowledge and clearly note it.
 
   // Build snapshot context block
   const contextBlock = sources
@@ -498,20 +483,18 @@ Rationale: ${s.rationale ? s.rationale.slice(0, 400) : "N/A"}`;
       }
     }
 
-    const currentUserContent = `Answer the user's latest question using the captured contexts and/or GitHub code below that are actually relevant. You have the full conversation history above for context — use it to understand follow-up questions and references like "do that" or "the code you mentioned".
+    const currentUserContent = `Answer the user's latest question. You have two sources of knowledge: (1) captured team contexts below, and (2) your own general AI knowledge. Use both.
 
 Latest question: ${question}
 ${hasSnapshots ? `\n## Captured AI Conversations\n\n${contextBlock}` : ""}${githubBlock}
 
-Strict rules:
-- Use a context ONLY if its content directly addresses the question.
-- For captured conversations, cite with [1], [2], etc.
-- For GitHub code or commits, cite with [GH1], [GH2], etc.
-- DO NOT cite a context just to pad the answer. Better to cite one source well than four loosely.
-- For commit/history questions: the GitHub commit data above IS the authoritative source — answer directly from it with sha, author, date, and message. Do not say you lack real-time access.
-- If the question is a follow-up and the answer is in the conversation history above, answer from that — do NOT say you have no captured conversation.
-- If NONE of the contexts and history answer the question, respond exactly with: "I don't have a captured conversation that answers this. Try rephrasing, or capture a chat on this topic."
-- Be concise (2-4 paragraphs max). No filler.
+Rules:
+- PRIORITY 1: If captured contexts or conversation history directly answer the question, use them. Cite captured conversations as [1], [2], etc. Cite GitHub data as [GH1], [GH2], etc.
+- PRIORITY 2: If the question needs code, a technical explanation, or something not in the captured contexts — answer from your general AI knowledge. Add a short note at the end: "*(Note: answered from general knowledge — no matching captured conversation found.)*"
+- For follow-up questions: use the conversation history to understand what "it", "that", "the code above", etc. refer to.
+- For commit/history questions: the GitHub data IS authoritative — give sha, author, date, message directly.
+- NEVER refuse to answer a question you're capable of answering. Always try to help.
+- Be concise. No filler.
 - End with a single line: CONFIDENCE: [0.0-1.0]`;
 
     const message = await anthropic.messages.create({
@@ -551,7 +534,9 @@ Strict rules:
     if (n >= 1 && n <= sources.length) citedNumbers.add(n);
   }
 
-  const isNoMatch = /^i don'?t have a captured conversation/i.test(answer.trim());
+  // ENGRAM now always answers (general knowledge fallback), so isNoMatch is
+  // only true if Claude genuinely has nothing useful to say at all.
+  const isNoMatch = false;
 
   // Build `related`: strong-but-uncited candidates from the FULL scored
   // pool (not just top-4 that competed for cited slots). Threshold is

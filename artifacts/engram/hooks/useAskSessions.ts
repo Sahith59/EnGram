@@ -35,10 +35,12 @@ export interface AskSession {
   scope: string;
   created_at: string;
   updated_at: string;
+  pinned?: boolean;
+  favorite?: boolean;
 }
 
-const STORAGE_KEY = "engram_ask_sessions_v1";
-const ACTIVE_KEY = "engram_ask_active_session_v1";
+const STORAGE_KEY = "engram_ask_sessions_v2";
+const ACTIVE_KEY = "engram_ask_active_session_v2";
 
 function uuid(): string {
   return typeof crypto !== "undefined" && crypto.randomUUID
@@ -80,6 +82,16 @@ function saveActiveId(id: string | null) {
   } catch {}
 }
 
+export function sortSessions(sessions: AskSession[]): AskSession[] {
+  const pinned = sessions.filter((s) => s.pinned).sort(
+    (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+  );
+  const rest = sessions.filter((s) => !s.pinned).sort(
+    (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+  );
+  return [...pinned, ...rest];
+}
+
 export function useAskSessions() {
   const [sessions, setSessions] = useState<AskSession[]>([]);
   const [activeSessionId, setActiveSessionIdState] = useState<string | null>(null);
@@ -87,7 +99,7 @@ export function useAskSessions() {
 
   useEffect(() => {
     const local = loadLocal();
-    setSessions(local);
+    setSessions(sortSessions(local));
     const savedActive = loadActiveId();
     if (savedActive && local.find((s) => s.id === savedActive)) {
       setActiveSessionIdState(savedActive);
@@ -107,11 +119,9 @@ export function useAskSessions() {
         for (const r of remote) {
           if (!localIds.has(r.id)) merged.push(r);
         }
-        merged.sort(
-          (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-        );
-        saveLocal(merged);
-        return merged;
+        const sorted = sortSessions(merged);
+        saveLocal(sorted);
+        return sorted;
       });
     } catch {}
   }
@@ -132,7 +142,7 @@ export function useAskSessions() {
       updated_at: now,
     };
     setSessions((prev) => {
-      const next = [session, ...prev];
+      const next = sortSessions([session, ...prev]);
       saveLocal(next);
       return next;
     });
@@ -147,15 +157,10 @@ export function useAskSessions() {
 
   const addMessage = useCallback((sessionId: string, msg: MessageRecord) => {
     setSessions((prev) => {
-      const next = prev.map((s) => {
+      const next = sortSessions(prev.map((s) => {
         if (s.id !== sessionId) return s;
-        const updated: AskSession = {
-          ...s,
-          messages: [...s.messages, msg],
-          updated_at: new Date().toISOString(),
-        };
-        return updated;
-      });
+        return { ...s, messages: [...s.messages, msg], updated_at: new Date().toISOString() };
+      }));
       saveLocal(next);
       const updated = next.find((s) => s.id === sessionId);
       if (updated && !syncInFlight.current) {
@@ -178,13 +183,42 @@ export function useAskSessions() {
       saveLocal(next);
       return next;
     });
-    // Use the raw state setter with functional form so we get the latest value
     setActiveSessionIdState((prev) => {
       const next = prev === sessionId ? null : prev;
       saveActiveId(next);
       return next;
     });
     fetch(`/api/ask/sessions/${sessionId}`, { method: "DELETE" }).catch(() => {});
+  }, []);
+
+  const renameSession = useCallback((sessionId: string, newTitle: string) => {
+    const title = newTitle.trim();
+    if (!title) return;
+    setSessions((prev) => {
+      const next = prev.map((s) => (s.id === sessionId ? { ...s, title } : s));
+      saveLocal(next);
+      return next;
+    });
+  }, []);
+
+  const togglePin = useCallback((sessionId: string) => {
+    setSessions((prev) => {
+      const next = sortSessions(
+        prev.map((s) => (s.id === sessionId ? { ...s, pinned: !s.pinned } : s))
+      );
+      saveLocal(next);
+      return next;
+    });
+  }, []);
+
+  const toggleFavorite = useCallback((sessionId: string) => {
+    setSessions((prev) => {
+      const next = prev.map((s) =>
+        s.id === sessionId ? { ...s, favorite: !s.favorite } : s
+      );
+      saveLocal(next);
+      return next;
+    });
   }, []);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
@@ -197,5 +231,8 @@ export function useAskSessions() {
     createSession,
     addMessage,
     deleteSession,
+    renameSession,
+    togglePin,
+    toggleFavorite,
   };
 }
