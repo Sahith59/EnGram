@@ -499,7 +499,7 @@ Rules:
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-5",
-      max_tokens: 1024,
+      max_tokens: 4096,
       system:
         "You are ENGRAM, a precise knowledge assistant for a developer team. You have access to the conversation history and captured AI context. Maintain continuity across follow-up questions.",
       messages: [
