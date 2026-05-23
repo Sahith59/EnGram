@@ -131,15 +131,15 @@
       });
     } else if (TOOL === "claude") {
       // Strategy 1 (2025+): contains-based matching covers all known variants:
-      //   "human-turn", "user-human-turn" → user
-      //   "ai-turn", "assistant-turn"      → assistant
+      //   "human-turn", "user-human-turn", "user-turn" → user
+      //   "ai-turn", "assistant-turn"                  → assistant
       const modernEls = document.querySelectorAll(
-        "[data-testid*='human-turn'], [data-testid*='ai-turn'], [data-testid*='assistant-turn']"
+        "[data-testid*='human-turn'], [data-testid*='user-turn'], [data-testid*='ai-turn'], [data-testid*='assistant-turn']"
       );
       if (modernEls.length > 0) {
         modernEls.forEach((el) => {
           const tid = el.getAttribute("data-testid") ?? "";
-          const isUser = tid.includes("human");
+          const isUser = tid.includes("human") || tid.includes("user");
           const content = stripUiNoise(el.innerText?.trim() ?? "");
           if (content) pairs.push({ role: isUser ? "user" : "assistant", content });
         });
