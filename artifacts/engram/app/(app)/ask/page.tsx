@@ -92,14 +92,29 @@ export default function AskPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [question, setQuestion] = useState("");
   const [scope, setScope] = useState<Scope>("personal");
-  const [loading, setLoading] = useState(false);
+  // Track loading per session ID so switching chats doesn't bleed the spinner
+  const [loadingSessions, setLoadingSessions] = useState<Set<string>>(new Set());
+
+  // Is the CURRENT active session loading?
+  const isLoading = loadingSessions.has(activeSessionId ?? "__none__");
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [activeSession?.messages?.length, loading]);
+  }, [activeSession?.messages?.length, isLoading]);
+
+  function startLoading(id: string) {
+    setLoadingSessions((prev) => new Set([...prev, id]));
+  }
+  function stopLoading(id: string) {
+    setLoadingSessions((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }
 
   function handleExample(q: string) {
     setQuestion(q);
@@ -109,11 +124,11 @@ export default function AskPage() {
   async function handleSubmit(e?: React.FormEvent) {
     e?.preventDefault();
     const q = question.trim();
-    if (!q || loading) return;
+    // Block only if THIS session is already waiting — other sessions are fine
+    if (!q || isLoading) return;
 
     setQuestion("");
     if (inputRef.current) inputRef.current.style.height = "auto";
-    setLoading(true);
 
     let session = activeSession;
     let sessionId = activeSessionId;
@@ -121,6 +136,8 @@ export default function AskPage() {
       session = createSession(q, scope);
       sessionId = session.id;
     }
+
+    startLoading(sessionId!);
 
     const conversationHistory = session.messages.map((m) => ({
       question: m.question,
@@ -161,7 +178,7 @@ export default function AskPage() {
         ts: Date.now(),
       });
     } finally {
-      setLoading(false);
+      stopLoading(sessionId!);
     }
   }
 
@@ -224,7 +241,7 @@ export default function AskPage() {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto py-6 px-4 space-y-8">
-          {messages.length === 0 && !loading ? (
+          {messages.length === 0 && !isLoading ? (
             <EmptyState onExample={handleExample} />
           ) : (
             <AnimatePresence initial={false}>
@@ -247,7 +264,7 @@ export default function AskPage() {
             </AnimatePresence>
           )}
 
-          {loading && (
+          {isLoading && (
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
               <LoadingDots />
             </motion.div>
@@ -270,7 +287,7 @@ export default function AskPage() {
                 onKeyDown={handleKeyDown}
                 placeholder="Ask anything — follow-ups keep context. Enter to send, Shift+Enter for newline."
                 rows={1}
-                disabled={loading}
+                disabled={isLoading}
                 className="w-full resize-none bg-gh-bg border border-gh-border rounded-xl px-4 py-3 text-sm text-gh-text placeholder:text-zinc-700 focus:outline-none focus:border-engram/40 focus:ring-1 focus:ring-engram/20 disabled:opacity-50 transition-colors overflow-y-auto"
                 style={{ minHeight: "3rem", maxHeight: "10rem" }}
                 onInput={(e) => {
@@ -282,7 +299,7 @@ export default function AskPage() {
             </div>
             <button
               type="submit"
-              disabled={!question.trim() || loading}
+              disabled={!question.trim() || isLoading}
               className="shrink-0 flex items-center justify-center w-10 h-10 rounded-xl bg-engram disabled:opacity-30 hover:opacity-90 disabled:cursor-not-allowed transition-opacity"
             >
               <Send className="w-4 h-4 text-white" />
