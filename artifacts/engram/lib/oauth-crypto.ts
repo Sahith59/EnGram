@@ -95,7 +95,7 @@ export function parseGitHubPrivateKey(raw: string): string {
   if (raw.includes("\\n")) return raw.replace(/\\n/g, "\n");
 
   // Single-line with spaces: reconstruct PEM with 64-char base64 lines
-  const m = raw.match(/-----BEGIN ([A-Z ]+)-----(.+?)-----END \1-----/s);
+  const m = raw.match(/-----BEGIN ([A-Z ]+)-----[\s\S]+?-----END \1-----/);
   if (m) {
     const label = m[1];
     const b64 = m[2].trim().replace(/\s+/g, "");
